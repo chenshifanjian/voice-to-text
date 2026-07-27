@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_NAME="voice-to-text"
+LANGUAGE="${VOICE_TO_TEXT_LANGUAGE:-zh}"
+MODEL="${VOICE_TO_TEXT_MODEL:-small}"
+TMP_DIR="${XDG_RUNTIME_DIR:-/tmp}/voice-to-text"
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/voice-to-text"
+VENV_DIR="$DATA_DIR/venv"
+
+mkdir -p "$TMP_DIR"
+
+notify() {
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send "$APP_NAME" "$1" >/dev/null 2>&1 || true
+  fi
+}
+
+die() {
+  notify "$1"
+  if command -v zenity >/dev/null 2>&1; then
+    zenity --error --title="$APP_NAME" --text="$1" >/dev/null 2>&1 || true
+  else
+    printf '%s\n' "$1" >&2
+  fi
+  exit 1
+}
+
+setup_backend() {
+  command -v uv >/dev/null 2>&1 || die "Missing uv. Install uv first, then run: voice-to-text --setup"
+  mkdir -p "$DATA_DIR"
+  uv venv "$VENV_DIR"
+  uv pip install --python "$VENV_DIR/bin/python" faster-whisper
+  notify "Speech recognition backend is installed."
+}
+
+if [ "${1:-}" = "--setup" ]; then
+  setup_backend
+  exit 0
+fi
+
+copy_text() {
+  local text="$1"
+  if command -v wl-copy >/dev/null 2>&1 && [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    wl-copy --trim-newline "$text" >/dev/null 2>&1 &
+  elif command -v xclip >/dev/null 2>&1; then
+    printf '%s' "$text" | xclip -selection clipboard >/dev/null 2>&1 &
+  elif command -v xsel >/dev/null 2>&1; then
+    printf '%s' "$text" | xsel --clipboard --input >/dev/null 2>&1 &
+  else
+    return 1
+  fi
+}
+
+transcribe_with_python_faster_whisper() {
+  local audio_file="$1"
+  python3 - "$audio_file" "$MODEL" "$LANGUAGE" <<'PY'
+import sys
+from faster_whisper import WhisperModel
+
+audio_file, model_name, language = sys.argv[1:4]
+model = WhisperModel(model_name, device="cpu", compute_type="int8")
+segments, _ = model.transcribe(audio_file, language=language, vad_filter=True)
+print("".join(segment.text for segment in segments).strip())
+PY
+}
+
+transcribe() {
+  local audio_file="$1"
+
+  if python3 -c 'import faster_whisper' >/dev/null 2>&1; then
+    transcribe_with_python_faster_whisper "$audio_file"
+    return
+  fi
+
+  if [ -x "$VENV_DIR/bin/python" ] && "$VENV_DIR/bin/python" -c 'import faster_whisper' >/dev/null 2>&1; then
+    "$VENV_DIR/bin/python" - "$audio_file" "$MODEL" "$LANGUAGE" <<'PY'
+import sys
+from faster_whisper import WhisperModel
+
+audio_file, model_name, language = sys.argv[1:4]
+model = WhisperModel(model_name, device="cpu", compute_type="int8")
+segments, _ = model.transcribe(audio_file, language=language, vad_filter=True)
+print("".join(segment.text for segment in segments).strip())
+PY
+    return
+  fi
+
+  if command -v whisper >/dev/null 2>&1; then
+    local out_dir="$TMP_DIR/whisper-output-$$"
+    mkdir -p "$out_dir"
+    whisper "$audio_file" --model "$MODEL" --language "$LANGUAGE" --output_format txt --output_dir "$out_dir" >/dev/null
+    sed -n '1,$p' "$out_dir/$(basename "${audio_file%.*}").txt"
+    return
+  fi
+
+  die "No speech recognition backend found. Run: voice-to-text --setup"
+}
+
+command -v ffmpeg >/dev/null 2>&1 || die "Missing ffmpeg."
+
+timestamp="$(date +%Y%m%d-%H%M%S)"
+audio_file="$TMP_DIR/recording-$timestamp.wav"
+text_file="$TMP_DIR/transcript-$timestamp.txt"
+error_file="$TMP_DIR/error-$timestamp.log"
+
+notify "Recording started. Click the stop dialog when finished."
+
+ffmpeg -hide_banner -loglevel error -y -f pulse -i default -ac 1 -ar 16000 "$audio_file" &
+ffmpeg_pid=$!
+
+if command -v zenity >/dev/null 2>&1; then
+  zenity --info --title="$APP_NAME" --text="Recording...\n\nClick Stop when finished." --ok-label="Stop recording" >/dev/null 2>&1 || true
+else
+  printf 'Recording. Press Enter to stop...\n' >&2
+  read -r _ || true
+fi
+
+kill -INT "$ffmpeg_pid" >/dev/null 2>&1 || true
+wait "$ffmpeg_pid" >/dev/null 2>&1 || true
+
+[ -s "$audio_file" ] || die "Recording failed. No valid audio was created."
+
+notify "Transcribing..."
+if ! text="$(transcribe "$audio_file" 2>"$error_file" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"; then
+  error_text="$(sed -n '1,20p' "$error_file")"
+  die "Transcription failed: ${error_text:-unknown error}\n\nLog: $error_file"
+fi
+[ -n "$text" ] || die "No speech was recognized."
+
+printf '%s\n' "$text" > "$text_file"
+copy_text "$text" || die "Text recognized, but clipboard copy failed. Text file: $text_file"
+
+notify "Copied to clipboard. Paste with Ctrl+V."
+
+if command -v zenity >/dev/null 2>&1; then
+  zenity --info --title="$APP_NAME" --text="Copied to clipboard:\n\n$text" --ok-label="Close" >/dev/null 2>&1 || true
+else
+  printf '%s\n' "$text"
+fi
