@@ -1,37 +1,41 @@
 # voice-to-text
 
-一个 Linux 桌面语音输入小工具：从默认麦克风录音，使用本地 `faster-whisper` 转文字，把结果复制到剪贴板，并通过桌面通知提示状态。
+一个很小的 Linux 桌面语音输入工具。
 
-适合快速语音输入：按快捷键，说话，停止录音，然后把识别出来的文字粘贴到聊天框、编辑器或任意输入框。
+按下快捷键，说一句话，停止录音。它会用本地 Whisper 模型把语音转成文字，并复制到剪贴板。接下来你只需要在聊天框、编辑器或浏览器输入框里按 `Ctrl+V`。
 
-## 功能
+这个工具最初是为“和 AI 快速语音交流”做的：不需要打开复杂应用，不需要常驻一个大服务，也不需要把录音发到云端。它只做一件事：把你刚说的话，尽快变成可以粘贴的文字。
 
-- 使用 `faster-whisper` 本地语音识别
-- 默认 CPU `int8` 模式，不依赖 CUDA
-- Wayland 下使用 `wl-copy` 复制到剪贴板
-- X11 下回退到 `xclip` 或 `xsel`
-- 使用 `notify-send` 发送桌面通知
-- 使用 `zenity` 提供“停止录音”弹窗
-- 临时录音和错误日志保存在 `${XDG_RUNTIME_DIR}/voice-to-text`
+## 适合谁
 
-## 依赖
+- 经常和 ChatGPT、Claude、OpenCode、MiMoCode 等 AI 工具对话的人
+- 想用语音快速写 prompt、笔记、搜索词或短消息的人
+- 使用 Linux 桌面，尤其是 Wayland/niri/sway/hyprland 的用户
+- 希望语音识别尽量本地完成，不想默认依赖在线服务的人
 
-系统依赖：
+如果你需要完整的连续听写、自动标点修正、托盘应用、历史记录或富 GUI，这个项目还不是那个形态。它更像一个简单、透明、可改的桌面自动化小工具。
 
-- `ffmpeg`
-- `uv`
-- `zenity`
-- `notify-send`
-- Wayland 环境需要 `wl-copy`
-- X11 环境需要 `xclip` 或 `xsel`
+## 功能特性
 
-Arch Linux 示例：
+- 本地语音识别：使用 `faster-whisper`
+- 默认中文识别，也可以切换语言
+- 默认 CPU `int8` 模式，不需要 CUDA
+- Wayland 剪贴板：`wl-copy`
+- X11 剪贴板回退：`xclip` 或 `xsel`
+- 桌面通知：`notify-send`
+- 停止录音弹窗：`zenity`
+- 不常驻后台，按需启动
+- 临时录音和日志放在 `${XDG_RUNTIME_DIR}/voice-to-text`
+
+## 快速开始
+
+安装系统依赖。Arch Linux 示例：
 
 ```bash
 sudo pacman -S ffmpeg uv zenity libnotify wl-clipboard
 ```
 
-## 安装
+克隆并安装：
 
 ```bash
 git clone https://github.com/chenshifanjian/voice-to-text.git
@@ -39,16 +43,6 @@ cd voice-to-text
 ./install.sh
 voice-to-text --setup
 ```
-
-`--setup` 会创建独立 Python 环境：
-
-```text
-~/.local/share/voice-to-text/venv
-```
-
-第一次转写时会下载 Whisper 模型到 Hugging Face 缓存目录，之后会复用缓存，不需要每次重新下载。
-
-## 使用
 
 运行：
 
@@ -56,49 +50,95 @@ voice-to-text --setup
 voice-to-text
 ```
 
-然后：
+使用流程：
 
-1. 对着麦克风说话。
-2. 点击弹窗里的停止按钮。
-3. 等待转文字完成。
-4. 在目标输入框按 `Ctrl+V` 粘贴。
+1. 运行命令或按你绑定的快捷键。
+2. 对着麦克风说话。
+3. 点击弹窗里的停止按钮。
+4. 等待转写完成。
+5. 到目标输入框按 `Ctrl+V` 粘贴。
 
-默认识别中文。可以用环境变量切换语言：
-
-```bash
-VOICE_TO_TEXT_LANGUAGE=en voice-to-text
-```
-
-默认模型是 `small`。可以切换模型：
-
-```bash
-VOICE_TO_TEXT_MODEL=base voice-to-text
-```
-
-常见模型选择：
-
-- `tiny`：最快，准确率最低
-- `base`：较快，适合普通短句
-- `small`：默认选项，速度和准确率比较均衡
-- `medium`：更准，但更慢
+第一次转写时会下载 Whisper 模型，可能会慢一点。模型下载完成后，后续会直接复用缓存。
 
 ## niri 快捷键
 
-在 niri 配置的 `binds { ... }` 块里加入：
+如果你使用 niri，可以把下面这行加入配置里的 `binds { ... }` 块：
 
 ```kdl
 Mod+Alt+Space hotkey-overlay-title="语音转文字 Voice to text" { spawn "voice-to-text"; }
 ```
 
-然后重新加载配置：
+重新加载配置：
 
 ```bash
 niri msg action load-config-file
 ```
 
-之后按 `Mod+Alt+Space` 就可以启动录音转文字。
+之后按 `Mod+Alt+Space` 就能开始录音。
+
+## 配置
+
+默认识别中文：
+
+```bash
+voice-to-text
+```
+
+切换语言，例如英文：
+
+```bash
+VOICE_TO_TEXT_LANGUAGE=en voice-to-text
+```
+
+默认模型是 `small`。如果你想更快，可以换成 `base`：
+
+```bash
+VOICE_TO_TEXT_MODEL=base voice-to-text
+```
+
+模型选择建议：
+
+- `tiny`：最快，准确率最低
+- `base`：较快，适合短句和轻量机器
+- `small`：默认选择，速度和准确率比较均衡
+- `medium`：更准，但更慢，CPU 上等待时间会明显增加
+
+## 安装后文件位置
+
+安装脚本会写入：
+
+```text
+~/.local/bin/voice-to-text
+~/.local/share/applications/voice-to-text.desktop
+```
+
+`voice-to-text --setup` 会创建独立 Python 环境：
+
+```text
+~/.local/share/voice-to-text/venv
+```
+
+Whisper 模型通常会缓存到 Hugging Face 缓存目录，例如：
+
+```text
+~/.cache/huggingface
+```
+
+临时录音、转写文本和错误日志位于：
+
+```text
+${XDG_RUNTIME_DIR}/voice-to-text
+```
+
+这个运行时目录重启后会清空，这是正常行为。
 
 ## 故障排查
+
+如果没有开始录音，先确认 `ffmpeg` 能访问默认麦克风：
+
+```bash
+ffmpeg -f pulse -i default -t 3 test.wav
+```
 
 如果转写失败，查看错误日志：
 
@@ -106,49 +146,92 @@ niri msg action load-config-file
 ${XDG_RUNTIME_DIR}/voice-to-text/error-*.log
 ```
 
-如果录音失败，先检查 `ffmpeg` 是否能访问默认麦克风：
+如果剪贴板没有内容：
+
+- Wayland 用户确认安装了 `wl-clipboard`
+- X11 用户确认安装了 `xclip` 或 `xsel`
+- 确认当前会话里存在 `WAYLAND_DISPLAY` 或 `DISPLAY`
+
+如果第一次运行很慢，通常是在下载或加载 Whisper 模型。等第一次完成后，再次使用会快很多。
+
+如果你看到 CUDA 相关错误，这个项目默认已经强制使用 CPU `int8`，通常不需要安装 CUDA。请确认你使用的是当前版本脚本。
+
+## 和其他听写工具的区别
+
+Linux 上已经有更成熟的听写项目，比如 `nerd-dictation`。这个项目的目标更窄：
+
+- 不做常驻服务
+- 不追求完整听写系统
+- 不默认模拟键盘输入
+- 优先把识别结果放进剪贴板
+- 优先服务“说一句 prompt，然后粘贴给 AI”的场景
+
+这种设计牺牲了一些自动化程度，但换来的是简单、透明、容易排错。
+
+## 路线图
+
+可能会继续做的改进：
+
+- 按一次开始、再按一次停止的 toggle 模式
+- 可选自动粘贴到当前窗口
+- 最近几次转写历史
+- 更友好的安装检查
+- GNOME/KDE/sway/hyprland 快捷键示例
+- 中英文自动识别模式
+
+## 卸载
+
+删除安装文件：
 
 ```bash
-ffmpeg -f pulse -i default -t 3 test.wav
+rm -f ~/.local/bin/voice-to-text
+rm -f ~/.local/share/applications/voice-to-text.desktop
+rm -rf ~/.local/share/voice-to-text
 ```
 
-如果 Wayland 下无法复制到剪贴板，确认安装了 `wl-clipboard`，并且环境变量 `WAYLAND_DISPLAY` 存在。
+如果你也想删除已下载的模型缓存，需要清理 Hugging Face 缓存目录。注意这个目录可能被其他项目共用。
 
-如果第一次转写很慢，通常是在下载或加载 Whisper 模型。等第一次完成后，后续会快很多。
+## License
+
+MIT
+
+---
 
 ## English
 
-A small Linux desktop voice input helper. It records from the default microphone, transcribes speech locally with `faster-whisper`, copies the result to the clipboard, and shows desktop notifications.
+`voice-to-text` is a tiny Linux desktop voice input helper.
 
-It is designed for quick voice prompts: press a shortcut, speak, stop recording, then paste the recognized text into any chat or editor.
+Press a shortcut, speak, stop recording, and it transcribes your speech locally with Whisper. The result is copied to the clipboard so you can paste it into any chat box, editor, browser, or terminal workflow.
+
+It was originally built for fast voice conversations with AI tools. It does not try to be a full dictation suite. It simply turns one short voice note into text as quickly and transparently as possible.
+
+## Who It Is For
+
+- People who often talk to AI coding or chat tools
+- Linux desktop users who want quick voice prompts
+- Wayland users who prefer clipboard-based workflows
+- Users who want local speech recognition by default
 
 ## Features
 
 - Local transcription with `faster-whisper`
-- CPU `int8` mode by default, so it works without CUDA
+- Chinese by default, configurable via environment variables
+- CPU `int8` mode by default, no CUDA required
 - Wayland clipboard support via `wl-copy`
-- X11 clipboard fallback via `xclip` or `xsel`
+- X11 fallback via `xclip` or `xsel`
 - Desktop notifications via `notify-send`
 - Stop-recording dialog via `zenity`
-- Temporary recordings and logs under `${XDG_RUNTIME_DIR}/voice-to-text`
+- No background daemon
 
-## Dependencies
+## Install
 
-System packages:
-
-- `ffmpeg`
-- `uv`
-- `zenity`
-- `notify-send`
-- `wl-copy` on Wayland, or `xclip`/`xsel` on X11
-
-On Arch Linux, for example:
+Arch Linux example:
 
 ```bash
 sudo pacman -S ffmpeg uv zenity libnotify wl-clipboard
 ```
 
-## Install
+Install the tool:
 
 ```bash
 git clone https://github.com/chenshifanjian/voice-to-text.git
@@ -157,31 +240,23 @@ cd voice-to-text
 voice-to-text --setup
 ```
 
-The setup step creates an isolated environment at:
-
-```text
-~/.local/share/voice-to-text/venv
-```
-
-The first transcription downloads the selected Whisper model into the Hugging Face cache. Later runs reuse the cached model.
-
-## Usage
-
-Run:
+Run it:
 
 ```bash
 voice-to-text
 ```
 
-Speak into the microphone, click the stop dialog, then paste the clipboard text with `Ctrl+V`.
+Speak, stop recording, then paste with `Ctrl+V`.
 
-Chinese is the default recognition language. Override it with:
+## Configuration
+
+Change language:
 
 ```bash
 VOICE_TO_TEXT_LANGUAGE=en voice-to-text
 ```
 
-The default model is `small`. Override it with:
+Change model:
 
 ```bash
 VOICE_TO_TEXT_MODEL=base voice-to-text
@@ -195,7 +270,7 @@ Add this inside your `binds { ... }` block:
 Mod+Alt+Space hotkey-overlay-title="Voice to text" { spawn "voice-to-text"; }
 ```
 
-Then reload niri config:
+Reload config:
 
 ```bash
 niri msg action load-config-file
@@ -203,19 +278,19 @@ niri msg action load-config-file
 
 ## Troubleshooting
 
-If transcription fails, check logs in:
+Error logs are written to:
 
 ```text
 ${XDG_RUNTIME_DIR}/voice-to-text/error-*.log
 ```
 
-If recording fails, verify that `ffmpeg` can access your default PulseAudio/PipeWire source:
+To test microphone access:
 
 ```bash
 ffmpeg -f pulse -i default -t 3 test.wav
 ```
 
-If clipboard copy does not work on Wayland, install `wl-clipboard` and make sure `WAYLAND_DISPLAY` is set.
+For Wayland clipboard support, install `wl-clipboard`. For X11, install `xclip` or `xsel`.
 
 ## License
 
