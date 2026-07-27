@@ -12,7 +12,7 @@ cat > "$APP_DIR/voice-to-text.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Voice to Text
-Name[zh_CN]=语音转文字
+Name[zh_CN]=语贴
 Comment=Record voice, transcribe it, and copy text to clipboard
 Exec=$BIN_DIR/voice-to-text
 Terminal=false

@@ -1,6 +1,8 @@
-# voice-to-text
+# 语贴 voice-to-text
 
 一个很小的 Linux 桌面语音输入工具。
+
+中文名叫 **语贴**：语音变成文字，然后贴到你正在使用的地方。
 
 按下快捷键，说一句话，停止录音。它会用本地 Whisper 模型把语音转成文字，并复制到剪贴板。接下来你只需要在聊天框、编辑器或浏览器输入框里按 `Ctrl+V`。
 
@@ -199,7 +201,9 @@ MIT
 
 ## English
 
-`voice-to-text` is a tiny Linux desktop voice input helper.
+**语贴 voice-to-text** is a tiny Linux desktop voice input helper.
+
+The Chinese name means turning speech into text that you can paste wherever you are working.
 
 Press a shortcut, speak, stop recording, and it transcribes your speech locally with Whisper. The result is copied to the clipboard so you can paste it into any chat box, editor, browser, or terminal workflow.
 
