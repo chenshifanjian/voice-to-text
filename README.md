@@ -45,6 +45,7 @@ git clone https://github.com/chenshifanjian/voice-to-text.git
 cd voice-to-text
 ./install.sh
 voice-to-text --setup
+voice-to-text --check
 ```
 
 运行：
@@ -62,6 +63,12 @@ voice-to-text
 5. 到目标输入框按 `Ctrl+V` 粘贴。
 
 第一次转写时会下载 Whisper 模型，可能会慢一点。模型下载完成后，后续会直接复用缓存。
+
+如果只是想检查环境是否正常，不开始录音，可以运行：
+
+```bash
+voice-to-text --check
+```
 
 ## niri 快捷键
 
@@ -117,6 +124,14 @@ VOICE_TO_TEXT_BEAM_SIZE=3 voice-to-text
 VOICE_TO_TEXT_INITIAL_PROMPT="普通话和 English 混合输入，中文用简体。" voice-to-text
 ```
 
+默认从 PulseAudio/PipeWire 的 `default` 麦克风录音。特殊情况下可以覆盖录音后端：
+
+```bash
+VOICE_TO_TEXT_AUDIO_FORMAT=pulse VOICE_TO_TEXT_AUDIO_SOURCE=default voice-to-text
+```
+
+脚本带单实例保护：如果一次录音还没结束，再次触发快捷键会提示已有实例在运行，避免多个录音进程互相抢麦克风。
+
 模型选择建议：
 
 - `tiny`：最快，准确率最低
@@ -161,10 +176,22 @@ ${XDG_RUNTIME_DIR}/voice-to-text
 ffmpeg -f pulse -i default -t 3 test.wav
 ```
 
+也可以运行完整环境检查：
+
+```bash
+voice-to-text --check
+```
+
 如果转写失败，查看错误日志：
 
 ```text
 ${XDG_RUNTIME_DIR}/voice-to-text/error-*.log
+```
+
+如果录音启动失败，查看录音错误日志：
+
+```text
+${XDG_RUNTIME_DIR}/voice-to-text/recording-error-*.log
 ```
 
 如果剪贴板没有内容：

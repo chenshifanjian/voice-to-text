@@ -9,8 +9,26 @@ INITIAL_PROMPT="${VOICE_TO_TEXT_INITIAL_PROMPT:-以下是普通话和 English �
 TMP_DIR="${XDG_RUNTIME_DIR:-/tmp}/voice-to-text"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/voice-to-text"
 VENV_DIR="$DATA_DIR/venv"
+AUDIO_FORMAT="${VOICE_TO_TEXT_AUDIO_FORMAT:-pulse}"
+AUDIO_SOURCE="${VOICE_TO_TEXT_AUDIO_SOURCE:-default}"
+LOCK_DIR="$TMP_DIR/lock"
+ffmpeg_pid=""
 
 mkdir -p "$TMP_DIR"
+
+cleanup() {
+  if [ -n "$ffmpeg_pid" ] && kill -0 "$ffmpeg_pid" >/dev/null 2>&1; then
+    kill -INT "$ffmpeg_pid" >/dev/null 2>&1 || true
+    wait "$ffmpeg_pid" >/dev/null 2>&1 || true
+  fi
+  if [ -d "$LOCK_DIR" ]; then
+    rm -f "$LOCK_DIR/pid" >/dev/null 2>&1 || true
+    rmdir "$LOCK_DIR" >/dev/null 2>&1 || true
+  fi
+}
+
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT TERM
 
 notify() {
   if command -v notify-send >/dev/null 2>&1; then
@@ -18,14 +36,63 @@ notify() {
   fi
 }
 
+has_graphical_session() {
+  [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]
+}
+
 die() {
   notify "$1"
-  if command -v zenity >/dev/null 2>&1; then
+  if command -v zenity >/dev/null 2>&1 && has_graphical_session; then
     zenity --error --title="$APP_NAME" --text="$1" >/dev/null 2>&1 || true
   else
     printf '%s\n' "$1" >&2
   fi
   exit 1
+}
+
+validate_config() {
+  case "$BEAM_SIZE" in
+    ''|*[!0-9]*) die "VOICE_TO_TEXT_BEAM_SIZE must be a positive integer." ;;
+  esac
+  [ "$BEAM_SIZE" -gt 0 ] || die "VOICE_TO_TEXT_BEAM_SIZE must be greater than 0."
+}
+
+ensure_single_instance() {
+  if ! mkdir "$LOCK_DIR" >/dev/null 2>&1; then
+    if [ -f "$LOCK_DIR/pid" ]; then
+      old_pid="$(sed -n '1p' "$LOCK_DIR/pid" 2>/dev/null || true)"
+      if [ -n "$old_pid" ] && ! kill -0 "$old_pid" >/dev/null 2>&1; then
+        rm -rf "$LOCK_DIR"
+        mkdir "$LOCK_DIR" >/dev/null 2>&1 || die "Could not acquire voice-to-text lock."
+      else
+        die "voice-to-text is already running. Stop the current recording first."
+      fi
+    else
+      die "voice-to-text is already running or a stale lock exists: $LOCK_DIR"
+    fi
+  fi
+  printf '%s\n' "$$" > "$LOCK_DIR/pid"
+}
+
+ensure_recorder_backend() {
+  if [ "$AUDIO_FORMAT" = "pulse" ]; then
+    if ! command -v pactl >/dev/null 2>&1 && ! command -v wpctl >/dev/null 2>&1; then
+      die "PulseAudio/PipeWire tools were not found. ffmpeg may not be able to record from the default microphone."
+    fi
+  fi
+}
+
+has_clipboard_backend() {
+  if command -v wl-copy >/dev/null 2>&1 && [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    return 0
+  fi
+  if command -v xclip >/dev/null 2>&1 && [ -n "${DISPLAY:-}" ]; then
+    return 0
+  fi
+  if command -v xsel >/dev/null 2>&1 && [ -n "${DISPLAY:-}" ]; then
+    return 0
+  fi
+  return 1
 }
 
 setup_backend() {
@@ -38,8 +105,35 @@ setup_backend() {
   notify "Speech recognition backend is installed."
 }
 
+check_environment() {
+  validate_config
+  command -v ffmpeg >/dev/null 2>&1 || die "Missing ffmpeg."
+  ensure_recorder_backend
+  has_clipboard_backend || die "Missing clipboard backend. Install wl-clipboard on Wayland, or xclip/xsel on X11."
+  if [ -x "$VENV_DIR/bin/python" ] && "$VENV_DIR/bin/python" -c 'import faster_whisper, zhconv' >/dev/null 2>&1; then
+    printf 'ASR backend: %s\n' "$VENV_DIR/bin/python"
+  elif python3 -c 'import faster_whisper' >/dev/null 2>&1; then
+    printf 'ASR backend: system python faster-whisper\n'
+  elif command -v whisper >/dev/null 2>&1; then
+    printf 'ASR backend: whisper CLI\n'
+  else
+    die "No speech recognition backend found. Run: voice-to-text --setup"
+  fi
+  printf 'Recorder: ffmpeg -f %s -i %s\n' "$AUDIO_FORMAT" "$AUDIO_SOURCE"
+  printf 'Clipboard: available\n'
+  printf 'Model: %s\n' "$MODEL"
+  printf 'Language: %s\n' "$LANGUAGE"
+  printf 'Beam size: %s\n' "$BEAM_SIZE"
+  printf 'voice-to-text check passed.\n'
+}
+
 if [ "${1:-}" = "--setup" ]; then
   setup_backend
+  exit 0
+fi
+
+if [ "${1:-}" = "--check" ]; then
+  check_environment
   exit 0
 fi
 
@@ -86,11 +180,6 @@ PY
 transcribe() {
   local audio_file="$1"
 
-  if python3 -c 'import faster_whisper' >/dev/null 2>&1; then
-    transcribe_with_python_faster_whisper "$audio_file"
-    return
-  fi
-
   if [ -x "$VENV_DIR/bin/python" ] && "$VENV_DIR/bin/python" -c 'import faster_whisper' >/dev/null 2>&1; then
     "$VENV_DIR/bin/python" - "$audio_file" "$MODEL" "$LANGUAGE" "$BEAM_SIZE" "$INITIAL_PROMPT" <<'PY'
 import sys
@@ -118,6 +207,11 @@ PY
     return
   fi
 
+  if python3 -c 'import faster_whisper' >/dev/null 2>&1; then
+    transcribe_with_python_faster_whisper "$audio_file"
+    return
+  fi
+
   if command -v whisper >/dev/null 2>&1; then
     local out_dir="$TMP_DIR/whisper-output-$$"
     mkdir -p "$out_dir"
@@ -134,28 +228,46 @@ PY
 }
 
 command -v ffmpeg >/dev/null 2>&1 || die "Missing ffmpeg."
+validate_config
+ensure_single_instance
+ensure_recorder_backend
+has_clipboard_backend || die "Missing clipboard backend. Install wl-clipboard on Wayland, or xclip/xsel on X11."
 
 timestamp="$(date +%Y%m%d-%H%M%S)"
 audio_file="$TMP_DIR/recording-$timestamp.wav"
 text_file="$TMP_DIR/transcript-$timestamp.txt"
 error_file="$TMP_DIR/error-$timestamp.log"
+record_error_file="$TMP_DIR/recording-error-$timestamp.log"
 
 notify "Recording started. Click the stop dialog when finished."
 
-ffmpeg -hide_banner -loglevel error -y -f pulse -i default -ac 1 -ar 16000 "$audio_file" &
+ffmpeg -hide_banner -loglevel error -y -f "$AUDIO_FORMAT" -i "$AUDIO_SOURCE" -ac 1 -ar 16000 "$audio_file" 2>"$record_error_file" &
 ffmpeg_pid=$!
 
-if command -v zenity >/dev/null 2>&1; then
+sleep 0.3
+if ! kill -0 "$ffmpeg_pid" >/dev/null 2>&1; then
+  wait "$ffmpeg_pid" >/dev/null 2>&1 || true
+  error_text="$(sed -n '1,20p' "$record_error_file")"
+  die "Recording failed to start: ${error_text:-unknown error}\n\nLog: $record_error_file"
+fi
+
+if command -v zenity >/dev/null 2>&1 && has_graphical_session; then
   zenity --info --title="$APP_NAME" --text="Recording...\n\nClick Stop when finished." --ok-label="Stop recording" >/dev/null 2>&1 || true
 else
   printf 'Recording. Press Enter to stop...\n' >&2
   read -r _ || true
 fi
 
-kill -INT "$ffmpeg_pid" >/dev/null 2>&1 || true
-wait "$ffmpeg_pid" >/dev/null 2>&1 || true
+if kill -0 "$ffmpeg_pid" >/dev/null 2>&1; then
+  kill -INT "$ffmpeg_pid" >/dev/null 2>&1 || true
+  wait "$ffmpeg_pid" >/dev/null 2>&1 || true
+fi
+ffmpeg_pid=""
 
-[ -s "$audio_file" ] || die "Recording failed. No valid audio was created."
+if [ ! -s "$audio_file" ]; then
+  error_text="$(sed -n '1,20p' "$record_error_file")"
+  die "Recording failed. No valid audio was created. ${error_text:-}\n\nLog: $record_error_file"
+fi
 
 notify "Transcribing..."
 if ! text="$(transcribe "$audio_file" 2>"$error_file" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"; then
@@ -169,7 +281,7 @@ copy_text "$text" || die "Text recognized, but clipboard copy failed. Text file:
 
 notify "Copied to clipboard. Paste with Ctrl+V."
 
-if command -v zenity >/dev/null 2>&1; then
+if command -v zenity >/dev/null 2>&1 && has_graphical_session; then
   zenity --info --title="$APP_NAME" --text="Copied to clipboard:\n\n$text" --ok-label="Close" >/dev/null 2>&1 || true
 else
   printf '%s\n' "$text"
