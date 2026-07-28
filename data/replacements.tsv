@@ -1,0 +1,51 @@
+# Literal post-transcription replacements. Format: wrong<TAB>right
+# Add personal corrections to ~/.config/voice-to-text/replacements.tsv.
+open code	OpenCode
+Open Code	OpenCode
+Mimo Code	MiMoCode
+mimo code	MiMoCode
+Github	GitHub
+git hub	GitHub
+Git Hub	GitHub
+read me	README
+Read Me	README
+mark down	Markdown
+Mark Down	Markdown
+way land	Wayland
+Way Land	Wayland
+pipe wire	PipeWire
+Pipe Wire	PipeWire
+pulse audio	PulseAudio
+Pulse Audio	PulseAudio
+faster whisper	faster-whisper
+Faster Whisper	faster-whisper
+open AI	OpenAI
+Open AI	OpenAI
+hugging face	Hugging Face
+Hugging face	Hugging Face
+next JS	Next.js
+Next JS	Next.js
+node JS	Node.js
+Node JS	Node.js
+type script	TypeScript
+java script	JavaScript
+Java Script	JavaScript
+postgre SQL	PostgreSQL
+Postgre SQL	PostgreSQL
+my SQL	MySQL
+My SQL	MySQL
+docker file	Dockerfile
+Docker File	Dockerfile
+docker compose	docker compose
+Git hub actions	GitHub Actions
+github actions	GitHub Actions
+pull request	pull request
+CI CD	CI/CD
+ci cd	CI/CD
+LL M	LLM
+ll m	LLM
+API接口	API 接口
+URL地址	URL 地址
+IP地址	IP 地址
+JSON格式	JSON 格式
+YAML格式	YAML 格式

@@ -1,0 +1,185 @@
+# Starter computer terminology for Whisper initial_prompt.
+# Sources reviewed: Wikipedia computer science, computer hardware, and AI glossaries.
+# Add personal terms to ~/.config/voice-to-text/terms.txt.
+AI
+AGI
+API
+ASCII
+ASR
+BIOS
+CPU
+CUDA
+DNS
+GPU
+GUI
+HTTP
+HTTPS
+I/O
+IDE
+IP address
+JSON
+LAN
+LLM
+NLP
+OCR
+OS
+PDF
+RAM
+README
+REST API
+SDK
+SSH
+SSL
+TCP
+TLS
+UDP
+UI
+URL
+USB
+UTF-8
+UUID
+VPN
+WebSocket
+XML
+YAML
+algorithm
+array
+async
+backpropagation
+bandwidth
+benchmark
+binary search
+Boolean
+cache
+callback
+class
+client
+compiler
+container
+context window
+database
+debugger
+dependency
+diff
+Docker
+embedding
+endpoint
+exception
+filesystem
+firmware
+framework
+function
+garbage collection
+Git
+GitHub
+GitLab
+hash table
+heap
+inference
+interface
+kernel
+latency
+library
+Linux
+local model
+machine learning
+Markdown
+middleware
+model checkpoint
+neural network
+object-oriented programming
+package manager
+pipeline
+prompt
+protocol
+Python
+query
+queue
+recursion
+repository
+runtime
+schema
+shell
+stack
+syntax
+terminal
+thread
+token
+tokenizer
+transformer
+type system
+virtual environment
+Wayland
+Whisper
+workflow
+zero shot
+few shot
+fine tuning
+faster-whisper
+OpenAI
+Anthropic
+Claude
+ChatGPT
+Codex
+OpenCode
+MiMoCode
+Copilot
+DeepSeek
+Qwen
+Gemini
+Llama
+Hugging Face
+LangChain
+LlamaIndex
+PyTorch
+TensorFlow
+ONNX
+NumPy
+Pandas
+FastAPI
+Flask
+Django
+Node.js
+React
+Next.js
+Vue
+TypeScript
+JavaScript
+Bash
+Rust
+Go
+Java
+C++
+CMake
+PostgreSQL
+SQLite
+MySQL
+Redis
+MongoDB
+Kubernetes
+Tauri
+Electron
+niri
+sway
+hyprland
+PipeWire
+PulseAudio
+ffmpeg
+wl-copy
+xclip
+xsel
+uv
+venv
+pyproject.toml
+package.json
+Dockerfile
+docker compose
+CI/CD
+GitHub Actions
+pull request
+merge conflict
+commit hash
+semantic versioning
+release tag
+墨刃工坊
+语贴

@@ -8,9 +8,15 @@ BEAM_SIZE="${VOICE_TO_TEXT_BEAM_SIZE:-5}"
 INITIAL_PROMPT="${VOICE_TO_TEXT_INITIAL_PROMPT:-以下是普通话和 English 混合的语音输入，请保留英文单词、技术名词、产品名和代码术语，中文使用简体字。}"
 TMP_DIR="${XDG_RUNTIME_DIR:-/tmp}/voice-to-text"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/voice-to-text"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/voice-to-text"
 VENV_DIR="$DATA_DIR/venv"
 AUDIO_FORMAT="${VOICE_TO_TEXT_AUDIO_FORMAT:-pulse}"
 AUDIO_SOURCE="${VOICE_TO_TEXT_AUDIO_SOURCE:-default}"
+TERMS_LIMIT="${VOICE_TO_TEXT_TERMS_LIMIT:-120}"
+TERMS_FILE="${VOICE_TO_TEXT_TERMS_FILE:-$CONFIG_DIR/terms.txt}"
+REPLACEMENTS_FILE="${VOICE_TO_TEXT_REPLACEMENTS_FILE:-$CONFIG_DIR/replacements.tsv}"
+BUILTIN_TERMS_FILE="$DATA_DIR/computer-terms.txt"
+BUILTIN_REPLACEMENTS_FILE="$DATA_DIR/replacements.tsv"
 LOCK_DIR="$TMP_DIR/lock"
 ffmpeg_pid=""
 
@@ -55,6 +61,40 @@ validate_config() {
     ''|*[!0-9]*) die "VOICE_TO_TEXT_BEAM_SIZE must be a positive integer." ;;
   esac
   [ "$BEAM_SIZE" -gt 0 ] || die "VOICE_TO_TEXT_BEAM_SIZE must be greater than 0."
+
+  case "$TERMS_LIMIT" in
+    ''|*[!0-9]*) die "VOICE_TO_TEXT_TERMS_LIMIT must be a non-negative integer." ;;
+  esac
+}
+
+build_initial_prompt() {
+  local count=0
+  local terms=""
+  local file line
+
+  for file in "$BUILTIN_TERMS_FILE" "$TERMS_FILE"; do
+    [ -f "$file" ] || continue
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="${line%%#*}"
+      line="${line#"${line%%[![:space:]]*}"}"
+      line="${line%"${line##*[![:space:]]}"}"
+      [ -n "$line" ] || continue
+      [ "$count" -lt "$TERMS_LIMIT" ] || break
+      if [ -z "$terms" ]; then
+        terms="$line"
+      else
+        terms="$terms、$line"
+      fi
+      count=$((count + 1))
+    done < "$file"
+    [ "$count" -lt "$TERMS_LIMIT" ] || break
+  done
+
+  if [ -n "$terms" ]; then
+    printf '%s 常见计算机专有名词包括：%s。' "$INITIAL_PROMPT" "$terms"
+  else
+    printf '%s' "$INITIAL_PROMPT"
+  fi
 }
 
 ensure_single_instance() {
@@ -124,6 +164,11 @@ check_environment() {
   printf 'Model: %s\n' "$MODEL"
   printf 'Language: %s\n' "$LANGUAGE"
   printf 'Beam size: %s\n' "$BEAM_SIZE"
+  printf 'Terms limit: %s\n' "$TERMS_LIMIT"
+  [ -f "$BUILTIN_TERMS_FILE" ] && printf 'Built-in terms: %s\n' "$BUILTIN_TERMS_FILE"
+  [ -f "$TERMS_FILE" ] && printf 'User terms: %s\n' "$TERMS_FILE"
+  [ -f "$BUILTIN_REPLACEMENTS_FILE" ] && printf 'Built-in replacements: %s\n' "$BUILTIN_REPLACEMENTS_FILE"
+  [ -f "$REPLACEMENTS_FILE" ] && printf 'User replacements: %s\n' "$REPLACEMENTS_FILE"
   printf 'voice-to-text check passed.\n'
 }
 
@@ -152,11 +197,29 @@ copy_text() {
 
 transcribe_with_python_faster_whisper() {
   local audio_file="$1"
-  python3 - "$audio_file" "$MODEL" "$LANGUAGE" "$BEAM_SIZE" "$INITIAL_PROMPT" <<'PY'
+  local prompt="$2"
+  python3 - "$audio_file" "$MODEL" "$LANGUAGE" "$BEAM_SIZE" "$prompt" "$BUILTIN_REPLACEMENTS_FILE" "$REPLACEMENTS_FILE" <<'PY'
 import sys
 from faster_whisper import WhisperModel
 
 audio_file, model_name, language, beam_size, initial_prompt = sys.argv[1:6]
+replacement_files = sys.argv[6:]
+
+def apply_replacements(text):
+    for replacement_file in replacement_files:
+        try:
+            with open(replacement_file, "r", encoding="utf-8") as handle:
+                for raw_line in handle:
+                    line = raw_line.strip()
+                    if not line or line.startswith("#") or "\t" not in line:
+                        continue
+                    source, target = line.split("\t", 1)
+                    if source:
+                        text = text.replace(source, target)
+        except FileNotFoundError:
+            continue
+    return text
+
 model = WhisperModel(model_name, device="cpu", compute_type="int8")
 kwargs = {
     "vad_filter": True,
@@ -173,19 +236,38 @@ try:
     text = convert(text, "zh-cn")
 except Exception:
     pass
+text = apply_replacements(text)
 print(text)
 PY
 }
 
 transcribe() {
   local audio_file="$1"
+  local prompt="$2"
 
   if [ -x "$VENV_DIR/bin/python" ] && "$VENV_DIR/bin/python" -c 'import faster_whisper' >/dev/null 2>&1; then
-    "$VENV_DIR/bin/python" - "$audio_file" "$MODEL" "$LANGUAGE" "$BEAM_SIZE" "$INITIAL_PROMPT" <<'PY'
+    "$VENV_DIR/bin/python" - "$audio_file" "$MODEL" "$LANGUAGE" "$BEAM_SIZE" "$prompt" "$BUILTIN_REPLACEMENTS_FILE" "$REPLACEMENTS_FILE" <<'PY'
 import sys
 from faster_whisper import WhisperModel
 
 audio_file, model_name, language, beam_size, initial_prompt = sys.argv[1:6]
+replacement_files = sys.argv[6:]
+
+def apply_replacements(text):
+    for replacement_file in replacement_files:
+        try:
+            with open(replacement_file, "r", encoding="utf-8") as handle:
+                for raw_line in handle:
+                    line = raw_line.strip()
+                    if not line or line.startswith("#") or "\t" not in line:
+                        continue
+                    source, target = line.split("\t", 1)
+                    if source:
+                        text = text.replace(source, target)
+        except FileNotFoundError:
+            continue
+    return text
+
 model = WhisperModel(model_name, device="cpu", compute_type="int8")
 kwargs = {
     "vad_filter": True,
@@ -202,13 +284,14 @@ try:
     text = convert(text, "zh-cn")
 except Exception:
     pass
+text = apply_replacements(text)
 print(text)
 PY
     return
   fi
 
   if python3 -c 'import faster_whisper' >/dev/null 2>&1; then
-    transcribe_with_python_faster_whisper "$audio_file"
+    transcribe_with_python_faster_whisper "$audio_file" "$prompt"
     return
   fi
 
@@ -216,9 +299,9 @@ PY
     local out_dir="$TMP_DIR/whisper-output-$$"
     mkdir -p "$out_dir"
     if [ "$LANGUAGE" = "auto" ]; then
-      whisper "$audio_file" --model "$MODEL" --initial_prompt "$INITIAL_PROMPT" --output_format txt --output_dir "$out_dir" >/dev/null
+      whisper "$audio_file" --model "$MODEL" --initial_prompt "$prompt" --output_format txt --output_dir "$out_dir" >/dev/null
     else
-      whisper "$audio_file" --model "$MODEL" --language "$LANGUAGE" --initial_prompt "$INITIAL_PROMPT" --output_format txt --output_dir "$out_dir" >/dev/null
+      whisper "$audio_file" --model "$MODEL" --language "$LANGUAGE" --initial_prompt "$prompt" --output_format txt --output_dir "$out_dir" >/dev/null
     fi
     sed -n '1,$p' "$out_dir/$(basename "${audio_file%.*}").txt"
     return
@@ -238,6 +321,7 @@ audio_file="$TMP_DIR/recording-$timestamp.wav"
 text_file="$TMP_DIR/transcript-$timestamp.txt"
 error_file="$TMP_DIR/error-$timestamp.log"
 record_error_file="$TMP_DIR/recording-error-$timestamp.log"
+prompt="$(build_initial_prompt)"
 
 notify "Recording started. Click the stop dialog when finished."
 
@@ -270,7 +354,7 @@ if [ ! -s "$audio_file" ]; then
 fi
 
 notify "Transcribing..."
-if ! text="$(transcribe "$audio_file" 2>"$error_file" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"; then
+if ! text="$(transcribe "$audio_file" "$prompt" 2>"$error_file" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"; then
   error_text="$(sed -n '1,20p' "$error_file")"
   die "Transcription failed: ${error_text:-unknown error}\n\nLog: $error_file"
 fi

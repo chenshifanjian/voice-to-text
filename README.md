@@ -124,6 +124,61 @@ VOICE_TO_TEXT_BEAM_SIZE=3 voice-to-text
 VOICE_TO_TEXT_INITIAL_PROMPT="普通话和 English 混合输入，中文用简体。" voice-to-text
 ```
 
+安装脚本会额外安装一份计算机专有名词 starter 词库，来源参考了 Wikipedia 的计算机科学、计算机硬件和人工智能术语表，并补充了常见开发工具、AI 工具和 Linux 桌面词。运行时会把前 `120` 个词加入 Whisper 提示词，基本不增加识别时间：
+
+```text
+~/.local/share/voice-to-text/computer-terms.txt
+```
+
+你自己的高频词放在这里，每行一个词：
+
+```text
+~/.config/voice-to-text/terms.txt
+```
+
+比如：
+
+```text
+墨刃工坊
+语贴
+OpenCode
+MiMoCode
+niri
+Wayland
+faster-whisper
+```
+
+也可以调整加入提示词的数量：
+
+```bash
+VOICE_TO_TEXT_TERMS_LIMIT=180 voice-to-text
+```
+
+如果某些词经常被识别错，可以加后处理纠错表。格式是 `错词<Tab>正确词`：
+
+```text
+~/.config/voice-to-text/replacements.tsv
+```
+
+示例：
+
+```text
+open code	OpenCode
+git hub	GitHub
+read me	README
+```
+
+这套机制适合慢慢养：starter 词库只放通用计算机词和常见工具名，个人词库更适合放你自己的项目名、产品名、同事名、缩写、命令、库名和常说的 prompt 术语。如果你发现某个计算机术语、AI 工具名、Linux 桌面词或常见误识别特别高频，欢迎通过 issue 或 pull request 投稿，把它加进默认词库或纠错表。
+
+建议优先贡献这类内容：
+
+- 高频开发工具、AI 工具和开源项目名
+- 中英混合场景里常被拆错的词，比如 `GitHub`、`README`、`OpenCode`
+- Linux 桌面、终端、包管理和开发环境相关词
+- 确认稳定的错词到正词映射
+
+不建议把非常长、非常冷门或只在个人项目里出现一次的词放进默认词库。词库太大不会线性提升准确率，反而可能削弱提示效果；这类词更适合放进个人 `terms.txt`。
+
 默认从 PulseAudio/PipeWire 的 `default` 麦克风录音。特殊情况下可以覆盖录音后端：
 
 ```bash
@@ -225,7 +280,8 @@ Linux 上已经有更成熟的听写项目，比如 `nerd-dictation`。这个项
 - 最近几次转写历史
 - 更友好的安装检查
 - GNOME/KDE/sway/hyprland 快捷键示例
-- 更好的中英文混合识别
+- 持续扩充计算机术语和个人纠错词库
+- 基于真实使用反馈筛选默认术语，而不是盲目堆大词库
 
 ## 卸载
 
@@ -312,6 +368,22 @@ Change model:
 ```bash
 VOICE_TO_TEXT_MODEL=base voice-to-text
 ```
+
+The installer also ships a starter computer terminology list and literal correction table:
+
+```text
+~/.local/share/voice-to-text/computer-terms.txt
+~/.local/share/voice-to-text/replacements.tsv
+```
+
+Add personal terms and corrections here:
+
+```text
+~/.config/voice-to-text/terms.txt
+~/.config/voice-to-text/replacements.tsv
+```
+
+The starter list is intentionally bounded. Add project-specific words locally, and contribute broadly useful developer, AI, Linux desktop, and correction terms through issues or pull requests.
 
 ## niri Shortcut
 
