@@ -26,7 +26,8 @@
 - Wayland 剪贴板：`wl-copy`
 - X11 剪贴板回退：`xclip` 或 `xsel`
 - 桌面通知：`notify-send`
-- 停止录音弹窗：`zenity`
+- 中文小悬浮窗口：Python/Tk，录音和结果提示使用统一风格
+- 录音窗口支持录音时长、暂停/继续、停止录音、暗色/亮色切换和实时音量反馈
 - 不常驻后台，按需启动
 - 临时录音和日志放在 `${XDG_RUNTIME_DIR}/voice-to-text`
 - 可选个人词库和纠错表
@@ -60,7 +61,7 @@ voice-to-text
 
 1. 运行命令或按你绑定的快捷键。
 2. 对着麦克风说话。
-3. 点击弹窗里的停止按钮。
+3. 在“语贴”录音窗口里查看时长和音量反馈，可以暂停/继续，也可以点击“停止录音”。
 4. 等待转写完成。
 5. 到目标输入框按 `Ctrl+V` 粘贴。
 
@@ -93,6 +94,25 @@ niri msg action load-config-file
 ```
 
 之后按 `Mod+Alt+Space` 就能开始录音。
+
+录音时会显示一个小悬浮窗口、录音时长和实时音频反馈。默认可视化是波形：语贴会用 `ffmpeg` 读取麦克风 PCM 音频，按时间振幅画出类似录音软件的音波线，安静时趋近平线，有声音时随振幅起伏。右上角的太阳/月亮按钮可以在亮色和暗色之间切换。
+
+如果更喜欢音乐软件常见的频谱柱，可以切换：
+
+```bash
+VOICE_TO_TEXT_VISUALIZER=spectrum voice-to-text
+```
+
+可选值：`waveform`、`spectrum`。
+
+如果使用 niri，可以给标题为“语贴”的窗口加浮动规则：
+
+```kdl
+window-rule {
+    match title="语贴"
+    open-floating true
+}
+```
 
 ## 配置
 
@@ -132,7 +152,7 @@ VOICE_TO_TEXT_BEAM_SIZE=3 voice-to-text
 VOICE_TO_TEXT_INITIAL_PROMPT="普通话和 English 混合输入，中文用简体。" voice-to-text
 ```
 
-安装脚本会额外安装一份计算机专有名词 starter 词库，来源参考了 Wikipedia 的计算机科学、计算机硬件和人工智能术语表，并补充了常见开发工具、AI 工具和 Linux 桌面词。运行时会把前 `120` 个词加入 Whisper 提示词，基本不增加识别时间：
+安装脚本会额外安装一份计算机专有名词 starter 词库，来源参考了 Wikipedia 的计算机科学、计算机硬件和人工智能术语表，并补充了常见开发工具、AI 工具和 Linux 桌面词。运行时会把前 `40` 个词作为 `faster-whisper` hotwords 使用，减少专有名词对普通中文和数字听写的干扰，基本不增加识别时间：
 
 ```text
 ~/.local/share/voice-to-text/computer-terms.txt
@@ -159,7 +179,7 @@ faster-whisper
 也可以调整加入提示词的数量：
 
 ```bash
-VOICE_TO_TEXT_TERMS_LIMIT=180 voice-to-text
+VOICE_TO_TEXT_TERMS_LIMIT=80 voice-to-text
 ```
 
 如果某些词经常被识别错，可以加后处理纠错表。格式是 `错词<Tab>正确词`：
@@ -232,6 +252,14 @@ VOICE_TO_TEXT_HISTORY_LIMIT=50 voice-to-text
 ```bash
 VOICE_TO_TEXT_AUDIO_FORMAT=pulse VOICE_TO_TEXT_AUDIO_SOURCE=default voice-to-text
 ```
+
+录音窗口默认使用暗色主题。可以强制亮色：
+
+```bash
+VOICE_TO_TEXT_THEME=light voice-to-text
+```
+
+可选值：`light`、`dark`。
 
 脚本带单实例保护：如果一次录音还没结束，再次触发快捷键会提示已有实例在运行，避免多个录音进程互相抢麦克风。
 
@@ -385,7 +413,8 @@ It was originally built for fast voice conversations with AI tools. It does not 
 - Wayland clipboard support via `wl-copy`
 - X11 fallback via `xclip` or `xsel`
 - Desktop notifications via `notify-send`
-- Stop-recording dialog via `zenity`
+- Unified Chinese Python/Tk recording and result windows
+- Recording window with elapsed time, pause/resume, stop, dark/light theme toggle, and live audio visualization
 - No background daemon
 - Personal terminology and correction files
 - Small local transcript history
@@ -413,7 +442,7 @@ Run it:
 voice-to-text
 ```
 
-Speak, stop recording, then paste with `Ctrl+V`.
+Speak, watch the waveform, pause/resume if needed, stop recording, then paste with `Ctrl+V`.
 
 ## Configuration
 
@@ -429,7 +458,9 @@ Change model:
 VOICE_TO_TEXT_MODEL=base voice-to-text
 ```
 
-The installer also ships a starter computer terminology list and literal correction table:
+The default prompt is tuned for mixed Chinese, English words, product names, commands, and numbers. Ordinary numbers are requested as Arabic numerals without extra leading letters.
+
+The installer also ships a starter computer terminology list and literal correction table. The first `40` terms are passed to `faster-whisper` as `hotwords`, instead of being appended directly to the prompt, to reduce interference with ordinary Chinese and number dictation:
 
 ```text
 ~/.local/share/voice-to-text/computer-terms.txt
@@ -444,6 +475,20 @@ Add personal terms and corrections here:
 ```
 
 The starter list is intentionally bounded. Add project-specific words locally, and contribute broadly useful developer, AI, Linux desktop, and correction terms through issues or pull requests.
+
+The recording window defaults to dark mode. Force light mode with:
+
+```bash
+VOICE_TO_TEXT_THEME=light voice-to-text
+```
+
+The default visualization is a waveform. You can switch to spectrum bars:
+
+```bash
+VOICE_TO_TEXT_VISUALIZER=spectrum voice-to-text
+```
+
+Available visualizers: `waveform`, `spectrum`.
 
 Useful commands:
 
@@ -466,6 +511,15 @@ Reload config:
 
 ```bash
 niri msg action load-config-file
+```
+
+To open the `语贴` window as floating in niri:
+
+```kdl
+window-rule {
+    match title="语贴"
+    open-floating true
+}
 ```
 
 ## Troubleshooting

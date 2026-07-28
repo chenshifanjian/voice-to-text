@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="voice-to-text"
+APP_NAME="语贴"
 LANGUAGE="${VOICE_TO_TEXT_LANGUAGE:-auto}"
 MODEL="${VOICE_TO_TEXT_MODEL:-small}"
 BEAM_SIZE="${VOICE_TO_TEXT_BEAM_SIZE:-5}"
-INITIAL_PROMPT="${VOICE_TO_TEXT_INITIAL_PROMPT:-以下是普通话和 English 混合的语音输入，请保留英文单词、技术名词、产品名和代码术语，中文使用简体字。}"
+INITIAL_PROMPT="${VOICE_TO_TEXT_INITIAL_PROMPT:-这是日常语音输入，可能包含中文、English words、产品名、命令和数字。请按实际发音转写，中文使用简体字，英文单词保留英文，普通数字识别为阿拉伯数字，不要在数字前添加字母。}"
 TMP_DIR="${XDG_RUNTIME_DIR:-/tmp}/voice-to-text"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/voice-to-text"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/voice-to-text"
 VENV_DIR="$DATA_DIR/venv"
 AUDIO_FORMAT="${VOICE_TO_TEXT_AUDIO_FORMAT:-pulse}"
 AUDIO_SOURCE="${VOICE_TO_TEXT_AUDIO_SOURCE:-default}"
-TERMS_LIMIT="${VOICE_TO_TEXT_TERMS_LIMIT:-120}"
+TERMS_LIMIT="${VOICE_TO_TEXT_TERMS_LIMIT:-40}"
 TERMS_FILE="${VOICE_TO_TEXT_TERMS_FILE:-$CONFIG_DIR/terms.txt}"
 REPLACEMENTS_FILE="${VOICE_TO_TEXT_REPLACEMENTS_FILE:-$CONFIG_DIR/replacements.tsv}"
 BUILTIN_TERMS_FILE="$DATA_DIR/computer-terms.txt"
@@ -26,6 +26,7 @@ mkdir -p "$TMP_DIR"
 
 cleanup() {
   if [ -n "$ffmpeg_pid" ] && kill -0 "$ffmpeg_pid" >/dev/null 2>&1; then
+    kill -CONT "$ffmpeg_pid" >/dev/null 2>&1 || true
     kill -INT "$ffmpeg_pid" >/dev/null 2>&1 || true
     wait "$ffmpeg_pid" >/dev/null 2>&1 || true
   fi
@@ -42,6 +43,11 @@ notify() {
   if command -v notify-send >/dev/null 2>&1; then
     notify-send "$APP_NAME" "$1" >/dev/null 2>&1 || true
   fi
+}
+
+format_duration() {
+  local seconds="$1"
+  printf '%02d:%02d' "$((seconds / 60))" "$((seconds % 60))"
 }
 
 has_graphical_session() {
@@ -73,7 +79,7 @@ validate_config() {
   esac
 }
 
-build_initial_prompt() {
+build_hotwords() {
   local count=0
   local terms=""
   local file line
@@ -89,18 +95,14 @@ build_initial_prompt() {
       if [ -z "$terms" ]; then
         terms="$line"
       else
-        terms="$terms、$line"
+        terms="$terms, $line"
       fi
       count=$((count + 1))
     done < "$file"
     [ "$count" -lt "$TERMS_LIMIT" ] || break
   done
 
-  if [ -n "$terms" ]; then
-    printf '%s 常见计算机专有名词包括：%s。' "$INITIAL_PROMPT" "$terms"
-  else
-    printf '%s' "$INITIAL_PROMPT"
-  fi
+  printf '%s' "$terms"
 }
 
 ensure_single_instance() {
@@ -328,6 +330,530 @@ copy_text() {
   fi
 }
 
+show_recording_dialog() {
+  local started_at elapsed duration wave_index wave
+
+  if has_graphical_session && python3 -c 'import tkinter' >/dev/null 2>&1; then
+    python3 - "$ffmpeg_pid" "$AUDIO_FORMAT" "$AUDIO_SOURCE" <<'PY'
+import math
+import os
+import queue
+import signal
+import subprocess
+import sys
+import threading
+import time
+import tkinter as tk
+import tkinter.font as tkfont
+
+recorder_pid = int(sys.argv[1])
+audio_format = sys.argv[2]
+audio_source = sys.argv[3]
+
+audio_queue = queue.Queue()
+paused = False
+stopping = False
+monitor = None
+pause_started = 0.0
+paused_total = 0.0
+started_at = time.monotonic()
+spectrum_levels = [0.0] * 32
+waveform_points = [0.0] * 96
+last_spectrum_at = 0.0
+phase = 0.0
+bar_count = 32
+waveform_count = 96
+visualizer_mode = os.environ.get("VOICE_TO_TEXT_VISUALIZER", "waveform").lower()
+if visualizer_mode not in {"waveform", "spectrum"}:
+    visualizer_mode = "waveform"
+theme_name = os.environ.get("VOICE_TO_TEXT_THEME", "dark").lower()
+if theme_name not in {"light", "dark"}:
+    theme_name = "light"
+themes = {
+    "light": {
+        "bg": "#f6f8fb",
+        "panel": "#ffffff",
+        "text": "#111827",
+        "muted": "#64748b",
+        "canvas": "#ffffff",
+        "border": "#d8dee9",
+        "bar": "#16a34a",
+        "quiet": "#d7dee8",
+        "button_bg": "#f3f4f6",
+        "button_fg": "#111827",
+    },
+    "dark": {
+        "bg": "#111827",
+        "panel": "#18212f",
+        "text": "#f8fafc",
+        "muted": "#94a3b8",
+        "canvas": "#0f172a",
+        "border": "#334155",
+        "bar": "#22c55e",
+        "quiet": "#334155",
+        "button_bg": "#1f2937",
+        "button_fg": "#f8fafc",
+    },
+}
+theme = themes[theme_name]
+
+
+def clamp(value, low, high):
+    return max(low, min(high, value))
+
+
+def pick_font_family(root):
+    candidates = [
+        "Noto Sans CJK SC",
+        "WenQuanYi Micro Hei",
+        "Source Han Sans SC",
+        "Microsoft YaHei",
+        "PingFang SC",
+        "DejaVu Sans",
+    ]
+    families = set(tkfont.families(root))
+    for candidate in candidates:
+        if candidate in families:
+            return candidate
+    return "TkDefaultFont"
+
+
+def monitor_audio():
+    global monitor
+    while not stopping:
+        cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-nostats",
+            "-loglevel",
+            "error",
+            "-f",
+            audio_format,
+            "-i",
+            audio_source,
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-f",
+            "s16le",
+            "-",
+        ]
+        try:
+            monitor = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            time.sleep(0.5)
+            continue
+
+        assert monitor.stdout is not None
+        sample_rate = 16000
+        chunk_samples = 1024
+        band_frequencies = []
+        hann_window = [0.5 - 0.5 * math.cos(2.0 * math.pi * n / (chunk_samples - 1)) for n in range(chunk_samples)]
+        min_freq = 90.0
+        max_freq = 4200.0
+        for band in range(bar_count):
+            low = min_freq * ((max_freq / min_freq) ** (band / bar_count))
+            high = min_freq * ((max_freq / min_freq) ** ((band + 1) / bar_count))
+            band_frequencies.append(math.sqrt(low * high))
+        band_coefficients = [2.0 * math.cos(2.0 * math.pi * frequency / sample_rate) for frequency in band_frequencies]
+
+        while not stopping:
+            raw = monitor.stdout.read(chunk_samples * 2)
+            if len(raw) < chunk_samples * 2:
+                break
+            samples = [int.from_bytes(raw[i:i + 2], "little", signed=True) / 32768.0 for i in range(0, len(raw), 2)]
+            waveform = []
+            bucket_size = max(1, len(samples) // waveform_count)
+            for point in range(waveform_count):
+                start = point * bucket_size
+                bucket = samples[start:start + bucket_size]
+                if not bucket:
+                    waveform.append(0.0)
+                    continue
+                peak = max(bucket, key=abs)
+                waveform.append(peak)
+            energies = [0.0] * bar_count
+            if visualizer_mode == "spectrum":
+                energies = []
+                for coeff in band_coefficients:
+                    prev = 0.0
+                    prev2 = 0.0
+                    for sample, window in zip(samples, hann_window):
+                        value = sample * window + coeff * prev - prev2
+                        prev2 = prev
+                        prev = value
+                    energy = math.sqrt(max(0.0, prev2 * prev2 + prev * prev - coeff * prev * prev2))
+                    level = clamp((math.log10(energy + 1e-7) + 3.8) / 2.2, 0.0, 1.0)
+                    if level < 0.035:
+                        level = 0.0
+                    energies.append(level)
+            audio_queue.put((waveform, energies))
+        if monitor.poll() is None:
+            monitor.terminate()
+        time.sleep(0.25)
+
+
+def safe_signal(sig):
+    try:
+        os.kill(recorder_pid, sig)
+    except ProcessLookupError:
+        pass
+
+
+def toggle_pause():
+    global paused, pause_started, paused_total
+    if paused:
+        safe_signal(signal.SIGCONT)
+        paused_total += time.monotonic() - pause_started
+        paused = False
+        pause_button.config(text="暂停录音")
+        status_label.config(text="正在录音")
+    else:
+        safe_signal(signal.SIGSTOP)
+        pause_started = time.monotonic()
+        paused = True
+        pause_button.config(text="继续录音")
+        status_label.config(text="已暂停")
+
+
+def apply_theme():
+    root.configure(bg=theme["bg"])
+    main.configure(bg=theme["panel"])
+    header.configure(bg=theme["panel"])
+    title_label.configure(bg=theme["panel"], fg=theme["text"])
+    status_label.configure(bg=theme["panel"], fg=theme["muted"])
+    buttons.configure(bg=theme["panel"])
+    time_label.configure(bg=theme["panel"], fg=theme["text"])
+    hint_label.configure(bg=theme["panel"], fg=theme["muted"])
+    canvas.configure(bg=theme["canvas"], highlightbackground=theme["border"])
+    for button in (pause_button, stop_button, theme_button):
+        button.configure(
+            bg=theme["button_bg"],
+            fg=theme["button_fg"],
+            activebackground=theme["button_bg"],
+            activeforeground=theme["button_fg"],
+        )
+
+
+def toggle_theme():
+    global theme_name, theme
+    theme_name = "light" if theme_name == "dark" else "dark"
+    theme = themes[theme_name]
+    theme_button.config(text="☾" if theme_name == "dark" else "☀")
+    apply_theme()
+
+
+def stop_recording():
+    global stopping, paused, paused_total
+    if stopping:
+        return
+    stopping = True
+    if paused:
+        safe_signal(signal.SIGCONT)
+        paused_total += time.monotonic() - pause_started
+        paused = False
+    if monitor is not None and monitor.poll() is None:
+        monitor.terminate()
+    root.destroy()
+
+
+def format_duration(seconds):
+    seconds = max(0, int(seconds))
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
+def update_ui():
+    global waveform_points, spectrum_levels, last_spectrum_at, phase
+    latest_waveform = None
+    latest_spectrum = None
+    while True:
+        try:
+            latest_waveform, latest_spectrum = audio_queue.get_nowait()
+        except queue.Empty:
+            break
+    if latest_spectrum is not None and latest_waveform is not None and not paused:
+        spectrum_levels = [max(old * 0.55, new) for old, new in zip(spectrum_levels, latest_spectrum)]
+        waveform_points = [old * 0.35 + new * 0.65 for old, new in zip(waveform_points, latest_waveform)]
+        last_spectrum_at = time.monotonic()
+    else:
+        spectrum_levels = [level * 0.76 for level in spectrum_levels]
+        waveform_points = [point * 0.72 for point in waveform_points]
+    if paused or time.monotonic() - last_spectrum_at > 0.35:
+        spectrum_levels = [level * 0.58 for level in spectrum_levels]
+        waveform_points = [point * 0.58 for point in waveform_points]
+
+    active_paused = time.monotonic() - pause_started if paused else 0.0
+    elapsed = time.monotonic() - started_at - paused_total - active_paused
+    time_label.config(text=format_duration(elapsed))
+
+    canvas.delete("all")
+    width = int(canvas.winfo_width() or 390)
+    height = int(canvas.winfo_height() or 74)
+    center = height / 2
+    peak = max(spectrum_levels) if spectrum_levels else 0.0
+    wave_peak = max((abs(point) for point in waveform_points), default=0.0)
+    peak = max(peak, wave_peak)
+    phase += 0.22 if peak > 0.03 and not paused else 0.02
+
+    canvas.create_line(0, center, width, center, fill=theme["quiet"], width=1)
+    if visualizer_mode == "spectrum":
+        gap = 4
+        bar_width = max(4, int((width - gap * (bar_count + 1)) / bar_count))
+        for index, level in enumerate(spectrum_levels):
+            ratio = index / max(1, bar_count - 1)
+            x1 = gap + index * (bar_width + gap)
+            x2 = x1 + bar_width
+            center_bias = 0.42 + 0.58 * (1.0 - abs(ratio - 0.5) * 2.0) ** 1.8
+            shimmer = 0.92 + 0.08 * math.sin(phase + index * 0.7)
+            lift = level * center_bias * shimmer * (height * 0.46)
+            if lift < 1.2:
+                lift = 1.2
+            y1 = center - lift
+            y2 = center + lift
+            color = theme["bar"] if level > 0.04 and not paused else theme["quiet"]
+            canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="")
+    else:
+        points = []
+        fill_points = [(0, center)]
+        gain = 2.4
+        for index, sample in enumerate(waveform_points):
+            ratio = index / max(1, waveform_count - 1)
+            x = ratio * width
+            envelope = 0.18 + 0.82 * (math.sin(math.pi * ratio) ** 0.65)
+            y = center - clamp(sample * gain, -1.0, 1.0) * envelope * (height * 0.46)
+            points.extend([x, y])
+            fill_points.append((x, y))
+        fill_points.append((width, center))
+        fill_flat = [coord for point in fill_points for coord in point]
+        color = theme["bar"] if wave_peak > 0.018 and not paused else theme["quiet"]
+        if wave_peak > 0.018 and not paused:
+            canvas.create_polygon(fill_flat, fill=color, outline="", stipple="gray25", smooth=True)
+        canvas.create_line(points, fill=color, width=3, smooth=True, capstyle=tk.ROUND, joinstyle=tk.ROUND)
+
+    root.after(80, update_ui)
+
+
+root = tk.Tk(className="voice-to-text")
+root.title("语贴")
+font_family = pick_font_family(root)
+default_font = tkfont.nametofont("TkDefaultFont")
+default_font.configure(family=font_family, size=11)
+root.option_add("*Font", default_font)
+root.geometry("420x250")
+root.minsize(380, 220)
+root.resizable(True, True)
+root.protocol("WM_DELETE_WINDOW", stop_recording)
+root.configure(bg=theme["bg"])
+try:
+    root.attributes("-topmost", True)
+except tk.TclError:
+    pass
+
+root.bind("<space>", lambda _event: toggle_pause())
+root.bind("<Return>", lambda _event: stop_recording())
+root.bind("<Escape>", lambda _event: stop_recording())
+
+main = tk.Frame(root, padx=14, pady=10, bg=theme["panel"])
+main.pack(fill=tk.BOTH, expand=True)
+
+header = tk.Frame(main, bg=theme["panel"])
+header.pack(fill=tk.X, pady=(0, 2))
+
+title_label = tk.Label(header, text="语贴", font=(font_family, 18, "bold"), bg=theme["panel"], fg=theme["text"])
+title_label.pack(side=tk.LEFT)
+
+theme_button = tk.Button(header, text="☾" if theme_name == "dark" else "☀", width=3, command=toggle_theme, bg=theme["button_bg"], fg=theme["button_fg"], activebackground=theme["button_bg"], activeforeground=theme["button_fg"])
+theme_button.pack(side=tk.RIGHT)
+
+status_label = tk.Label(main, text="正在录音", font=(font_family, 10), bg=theme["panel"], fg=theme["muted"])
+status_label.pack()
+
+buttons = tk.Frame(main, bg=theme["panel"])
+buttons.pack(fill=tk.X, pady=(6, 5))
+pause_button = tk.Button(buttons, text="暂停录音", width=12, height=1, command=toggle_pause, bg=theme["button_bg"], fg=theme["button_fg"], activebackground=theme["button_bg"], activeforeground=theme["button_fg"])
+pause_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 8))
+stop_button = tk.Button(buttons, text="停止录音", width=12, height=1, command=stop_recording, bg=theme["button_bg"], fg=theme["button_fg"], activebackground=theme["button_bg"], activeforeground=theme["button_fg"])
+stop_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(8, 0))
+
+time_label = tk.Label(main, text="00:00", font=("monospace", 22, "bold"), bg=theme["panel"], fg=theme["text"])
+time_label.pack(pady=(0, 3))
+
+hint_label = tk.Label(main, text="空格暂停/继续    回车或 Esc 停止", font=(font_family, 9), fg=theme["muted"], bg=theme["panel"])
+hint_label.pack(pady=(0, 5))
+
+canvas = tk.Canvas(main, width=386, height=64, bg=theme["canvas"], highlightthickness=1, highlightbackground=theme["border"])
+canvas.pack(fill=tk.BOTH, expand=True)
+
+apply_theme()
+
+threading.Thread(target=monitor_audio, daemon=True).start()
+root.after(80, update_ui)
+root.mainloop()
+
+if monitor is not None and monitor.poll() is None:
+    monitor.terminate()
+PY
+    return
+  fi
+
+  if command -v zenity >/dev/null 2>&1 && has_graphical_session; then
+    {
+      started_at="$(date +%s)"
+      wave_index=0
+      while kill -0 "$ffmpeg_pid" >/dev/null 2>&1; do
+        elapsed=$(($(date +%s) - started_at))
+        duration="$(format_duration "$elapsed")"
+        case "$wave_index" in
+          0) wave="▁▂▃▄▅▆▇▆▅▄▃▂" ;;
+          1) wave="▂▃▄▅▆▇▆▅▄▃▂▁" ;;
+          2) wave="▃▄▅▆▇▆▅▄▃▂▁▂" ;;
+          *) wave="▄▅▆▇▆▅▄▃▂▁▂▃" ;;
+        esac
+        printf '# 正在录音 %s\n\n%s\n\n说完后点击“停止录音”或关闭窗口。\n' "$duration" "$wave"
+        printf '50\n'
+        wave_index=$(((wave_index + 1) % 4))
+        sleep 1
+      done
+    } | zenity --progress --title="$APP_NAME" --text="准备录音..." --percentage=50 --pulsate --cancel-label="停止录音" >/dev/null 2>&1 || true
+    return
+  fi
+
+  printf '正在录音。按 Enter 停止...\n' >&2
+  read -r _ || true
+}
+
+show_result_dialog() {
+  local transcript_file="$1"
+
+  if has_graphical_session && python3 -c 'import tkinter' >/dev/null 2>&1; then
+    python3 - "$transcript_file" <<'PY'
+import os
+import sys
+import tkinter as tk
+import tkinter.font as tkfont
+
+transcript_file = sys.argv[1]
+try:
+    with open(transcript_file, "r", encoding="utf-8") as handle:
+        text = handle.read().strip()
+except Exception:
+    text = ""
+
+theme_name = os.environ.get("VOICE_TO_TEXT_THEME", "dark").lower()
+if theme_name not in {"light", "dark"}:
+    theme_name = "dark"
+themes = {
+    "light": {
+        "bg": "#f6f8fb",
+        "panel": "#ffffff",
+        "text": "#111827",
+        "muted": "#64748b",
+        "box": "#ffffff",
+        "border": "#d8dee9",
+        "button_bg": "#f3f4f6",
+        "button_fg": "#111827",
+    },
+    "dark": {
+        "bg": "#111827",
+        "panel": "#18212f",
+        "text": "#f8fafc",
+        "muted": "#94a3b8",
+        "box": "#0f172a",
+        "border": "#334155",
+        "button_bg": "#1f2937",
+        "button_fg": "#f8fafc",
+    },
+}
+theme = themes[theme_name]
+
+
+def pick_font_family(root):
+    candidates = [
+        "Noto Sans CJK SC",
+        "WenQuanYi Micro Hei",
+        "Source Han Sans SC",
+        "Microsoft YaHei",
+        "PingFang SC",
+        "DejaVu Sans",
+    ]
+    families = set(tkfont.families(root))
+    for candidate in candidates:
+        if candidate in families:
+            return candidate
+    return "TkDefaultFont"
+
+
+root = tk.Tk(className="voice-to-text")
+root.title("语贴")
+font_family = pick_font_family(root)
+default_font = tkfont.nametofont("TkDefaultFont")
+default_font.configure(family=font_family, size=11)
+root.option_add("*Font", default_font)
+root.geometry("520x310")
+root.minsize(420, 240)
+root.resizable(True, True)
+root.configure(bg=theme["bg"])
+try:
+    root.attributes("-topmost", True)
+except tk.TclError:
+    pass
+
+main = tk.Frame(root, padx=18, pady=14, bg=theme["panel"])
+main.pack(fill=tk.BOTH, expand=True)
+
+title = tk.Label(main, text="语贴", font=(font_family, 20, "bold"), bg=theme["panel"], fg=theme["text"])
+title.pack(pady=(0, 8))
+
+status = tk.Label(main, text="已复制到剪贴板", font=(font_family, 11), bg=theme["panel"], fg=theme["muted"])
+status.pack(pady=(0, 10))
+
+text_box = tk.Text(
+    main,
+    height=5,
+    wrap=tk.WORD,
+    bg=theme["box"],
+    fg=theme["text"],
+    insertbackground=theme["text"],
+    relief=tk.SOLID,
+    borderwidth=1,
+    highlightthickness=1,
+    highlightbackground=theme["border"],
+)
+text_box.insert("1.0", text)
+text_box.configure(state=tk.DISABLED)
+text_box.pack(fill=tk.BOTH, expand=True, pady=(0, 12))
+
+close_button = tk.Button(
+    main,
+    text="关闭",
+    height=1,
+    command=root.destroy,
+    bg=theme["button_bg"],
+    fg=theme["button_fg"],
+    activebackground=theme["button_bg"],
+    activeforeground=theme["button_fg"],
+)
+close_button.pack(fill=tk.X)
+
+root.bind("<Return>", lambda _event: root.destroy())
+root.bind("<Escape>", lambda _event: root.destroy())
+root.mainloop()
+PY
+    return
+  fi
+
+  if command -v zenity >/dev/null 2>&1 && has_graphical_session; then
+    zenity --info --title="$APP_NAME" --text="已复制到剪贴板：\n\n$(sed -n '1,20p' "$transcript_file")" --ok-label="关闭" >/dev/null 2>&1 || true
+  else
+    sed -n '1,$p' "$transcript_file"
+  fi
+}
+
 case "${1:-}" in
   --setup)
     setup_backend
@@ -369,12 +895,14 @@ esac
 transcribe_with_python_faster_whisper() {
   local audio_file="$1"
   local prompt="$2"
-  python3 - "$audio_file" "$MODEL" "$LANGUAGE" "$BEAM_SIZE" "$prompt" "$BUILTIN_REPLACEMENTS_FILE" "$REPLACEMENTS_FILE" <<'PY'
+  local hotwords="$3"
+  python3 - "$audio_file" "$MODEL" "$LANGUAGE" "$BEAM_SIZE" "$prompt" "$hotwords" "$BUILTIN_REPLACEMENTS_FILE" "$REPLACEMENTS_FILE" <<'PY'
 import sys
+import re
 from faster_whisper import WhisperModel
 
-audio_file, model_name, language, beam_size, initial_prompt = sys.argv[1:6]
-replacement_files = sys.argv[6:]
+audio_file, model_name, language, beam_size, initial_prompt, hotwords = sys.argv[1:7]
+replacement_files = sys.argv[7:]
 
 def apply_replacements(text):
     for replacement_file in replacement_files:
@@ -389,14 +917,18 @@ def apply_replacements(text):
                         text = text.replace(source, target)
         except FileNotFoundError:
             continue
+    if len(re.findall(r'(?<![A-Za-z])Z(?=\d)', text)) >= 2:
+        text = re.sub(r'(?<![A-Za-z])Z(?=\d)', '', text)
     return text
 
 model = WhisperModel(model_name, device="cpu", compute_type="int8")
 kwargs = {
     "vad_filter": True,
     "beam_size": int(beam_size),
+    "temperature": 0.0,
     "condition_on_previous_text": False,
     "initial_prompt": initial_prompt or None,
+    "hotwords": hotwords or None,
 }
 if language != "auto":
     kwargs["language"] = language
@@ -415,14 +947,16 @@ PY
 transcribe() {
   local audio_file="$1"
   local prompt="$2"
+  local hotwords="$3"
 
   if [ -x "$VENV_DIR/bin/python" ] && "$VENV_DIR/bin/python" -c 'import faster_whisper' >/dev/null 2>&1; then
-    "$VENV_DIR/bin/python" - "$audio_file" "$MODEL" "$LANGUAGE" "$BEAM_SIZE" "$prompt" "$BUILTIN_REPLACEMENTS_FILE" "$REPLACEMENTS_FILE" <<'PY'
+    "$VENV_DIR/bin/python" - "$audio_file" "$MODEL" "$LANGUAGE" "$BEAM_SIZE" "$prompt" "$hotwords" "$BUILTIN_REPLACEMENTS_FILE" "$REPLACEMENTS_FILE" <<'PY'
 import sys
+import re
 from faster_whisper import WhisperModel
 
-audio_file, model_name, language, beam_size, initial_prompt = sys.argv[1:6]
-replacement_files = sys.argv[6:]
+audio_file, model_name, language, beam_size, initial_prompt, hotwords = sys.argv[1:7]
+replacement_files = sys.argv[7:]
 
 def apply_replacements(text):
     for replacement_file in replacement_files:
@@ -437,14 +971,18 @@ def apply_replacements(text):
                         text = text.replace(source, target)
         except FileNotFoundError:
             continue
+    if len(re.findall(r'(?<![A-Za-z])Z(?=\d)', text)) >= 2:
+        text = re.sub(r'(?<![A-Za-z])Z(?=\d)', '', text)
     return text
 
 model = WhisperModel(model_name, device="cpu", compute_type="int8")
 kwargs = {
     "vad_filter": True,
     "beam_size": int(beam_size),
+    "temperature": 0.0,
     "condition_on_previous_text": False,
     "initial_prompt": initial_prompt or None,
+    "hotwords": hotwords or None,
 }
 if language != "auto":
     kwargs["language"] = language
@@ -462,7 +1000,7 @@ PY
   fi
 
   if python3 -c 'import faster_whisper' >/dev/null 2>&1; then
-    transcribe_with_python_faster_whisper "$audio_file" "$prompt"
+    transcribe_with_python_faster_whisper "$audio_file" "$prompt" "$hotwords"
     return
   fi
 
@@ -492,9 +1030,10 @@ audio_file="$TMP_DIR/recording-$timestamp.wav"
 text_file="$TMP_DIR/transcript-$timestamp.txt"
 error_file="$TMP_DIR/error-$timestamp.log"
 record_error_file="$TMP_DIR/recording-error-$timestamp.log"
-prompt="$(build_initial_prompt)"
+prompt="$INITIAL_PROMPT"
+hotwords="$(build_hotwords)"
 
-notify "Recording started. Click the stop dialog when finished."
+notify "录音开始。说完后点击停止录音。"
 
 ffmpeg -hide_banner -loglevel error -y -f "$AUDIO_FORMAT" -i "$AUDIO_SOURCE" -ac 1 -ar 16000 "$audio_file" 2>"$record_error_file" &
 ffmpeg_pid=$!
@@ -506,12 +1045,7 @@ if ! kill -0 "$ffmpeg_pid" >/dev/null 2>&1; then
   die "Recording failed to start: ${error_text:-unknown error}\n\nLog: $record_error_file"
 fi
 
-if command -v zenity >/dev/null 2>&1 && has_graphical_session; then
-  zenity --info --title="$APP_NAME" --text="Recording...\n\nClick Stop when finished." --ok-label="Stop recording" >/dev/null 2>&1 || true
-else
-  printf 'Recording. Press Enter to stop...\n' >&2
-  read -r _ || true
-fi
+show_recording_dialog
 
 if kill -0 "$ffmpeg_pid" >/dev/null 2>&1; then
   kill -INT "$ffmpeg_pid" >/dev/null 2>&1 || true
@@ -524,8 +1058,8 @@ if [ ! -s "$audio_file" ]; then
   die "Recording failed. No valid audio was created. ${error_text:-}\n\nLog: $record_error_file"
 fi
 
-notify "Transcribing..."
-if ! text="$(transcribe "$audio_file" "$prompt" 2>"$error_file" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"; then
+notify "正在转写..."
+if ! text="$(transcribe "$audio_file" "$prompt" "$hotwords" 2>"$error_file" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"; then
   error_text="$(sed -n '1,20p' "$error_file")"
   die "Transcription failed: ${error_text:-unknown error}\n\nLog: $error_file"
 fi
@@ -535,10 +1069,6 @@ printf '%s\n' "$text" > "$text_file"
 append_history "$text"
 copy_text "$text" || die "Text recognized, but clipboard copy failed. Text file: $text_file"
 
-notify "Copied to clipboard. Paste with Ctrl+V."
+notify "已复制到剪贴板。按 Ctrl+V 粘贴。"
 
-if command -v zenity >/dev/null 2>&1 && has_graphical_session; then
-  zenity --info --title="$APP_NAME" --text="Copied to clipboard:\n\n$text" --ok-label="Close" >/dev/null 2>&1 || true
-else
-  printf '%s\n' "$text"
-fi
+show_result_dialog "$text_file"
