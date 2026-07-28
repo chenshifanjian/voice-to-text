@@ -29,6 +29,8 @@
 - 停止录音弹窗：`zenity`
 - 不常驻后台，按需启动
 - 临时录音和日志放在 `${XDG_RUNTIME_DIR}/voice-to-text`
+- 可选个人词库和纠错表
+- 最近转写历史，方便找回上一条结果
 
 ## 快速开始
 
@@ -68,6 +70,12 @@ voice-to-text
 
 ```bash
 voice-to-text --check
+```
+
+如果是第一次配置个人词库，可以运行：
+
+```bash
+voice-to-text --init-config
 ```
 
 ## niri 快捷键
@@ -179,6 +187,46 @@ read me	README
 
 不建议把非常长、非常冷门或只在个人项目里出现一次的词放进默认词库。词库太大不会线性提升准确率，反而可能削弱提示效果；这类词更适合放进个人 `terms.txt`。
 
+## 轻量辅助命令
+
+语贴不做常驻服务，但提供几个按需运行的小命令，方便排错和找回文本。
+
+初始化个人词库和纠错表：
+
+```bash
+voice-to-text --init-config
+```
+
+查看更完整的诊断报告：
+
+```bash
+voice-to-text --doctor
+```
+
+查看最近转写历史：
+
+```bash
+voice-to-text --history
+```
+
+把最近一次转写重新复制到剪贴板：
+
+```bash
+voice-to-text --copy-last
+```
+
+历史记录默认保存在：
+
+```text
+~/.local/share/voice-to-text/history.tsv
+```
+
+默认只保留最近 `20` 条，可以调整：
+
+```bash
+VOICE_TO_TEXT_HISTORY_LIMIT=50 voice-to-text
+```
+
 默认从 PulseAudio/PipeWire 的 `default` 麦克风录音。特殊情况下可以覆盖录音后端：
 
 ```bash
@@ -209,6 +257,12 @@ VOICE_TO_TEXT_AUDIO_FORMAT=pulse VOICE_TO_TEXT_AUDIO_SOURCE=default voice-to-tex
 ~/.local/share/voice-to-text/venv
 ```
 
+最近转写历史位于：
+
+```text
+~/.local/share/voice-to-text/history.tsv
+```
+
 Whisper 模型通常会缓存到 Hugging Face 缓存目录，例如：
 
 ```text
@@ -235,6 +289,12 @@ ffmpeg -f pulse -i default -t 3 test.wav
 
 ```bash
 voice-to-text --check
+```
+
+如果需要更详细的诊断报告：
+
+```bash
+voice-to-text --doctor
 ```
 
 如果转写失败，查看错误日志：
@@ -277,8 +337,6 @@ Linux 上已经有更成熟的听写项目，比如 `nerd-dictation`。这个项
 
 - 按一次开始、再按一次停止的 toggle 模式
 - 可选自动粘贴到当前窗口
-- 最近几次转写历史
-- 更友好的安装检查
 - GNOME/KDE/sway/hyprland 快捷键示例
 - 持续扩充计算机术语和个人纠错词库
 - 基于真实使用反馈筛选默认术语，而不是盲目堆大词库
@@ -329,6 +387,8 @@ It was originally built for fast voice conversations with AI tools. It does not 
 - Desktop notifications via `notify-send`
 - Stop-recording dialog via `zenity`
 - No background daemon
+- Personal terminology and correction files
+- Small local transcript history
 
 ## Install
 
@@ -384,6 +444,15 @@ Add personal terms and corrections here:
 ```
 
 The starter list is intentionally bounded. Add project-specific words locally, and contribute broadly useful developer, AI, Linux desktop, and correction terms through issues or pull requests.
+
+Useful commands:
+
+```bash
+voice-to-text --init-config
+voice-to-text --doctor
+voice-to-text --history
+voice-to-text --copy-last
+```
 
 ## niri Shortcut
 

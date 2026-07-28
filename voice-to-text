@@ -17,6 +17,8 @@ TERMS_FILE="${VOICE_TO_TEXT_TERMS_FILE:-$CONFIG_DIR/terms.txt}"
 REPLACEMENTS_FILE="${VOICE_TO_TEXT_REPLACEMENTS_FILE:-$CONFIG_DIR/replacements.tsv}"
 BUILTIN_TERMS_FILE="$DATA_DIR/computer-terms.txt"
 BUILTIN_REPLACEMENTS_FILE="$DATA_DIR/replacements.tsv"
+HISTORY_FILE="${VOICE_TO_TEXT_HISTORY_FILE:-$DATA_DIR/history.tsv}"
+HISTORY_LIMIT="${VOICE_TO_TEXT_HISTORY_LIMIT:-20}"
 LOCK_DIR="$TMP_DIR/lock"
 ffmpeg_pid=""
 
@@ -64,6 +66,10 @@ validate_config() {
 
   case "$TERMS_LIMIT" in
     ''|*[!0-9]*) die "VOICE_TO_TEXT_TERMS_LIMIT must be a non-negative integer." ;;
+  esac
+
+  case "$HISTORY_LIMIT" in
+    ''|*[!0-9]*) die "VOICE_TO_TEXT_HISTORY_LIMIT must be a non-negative integer." ;;
   esac
 }
 
@@ -165,22 +171,149 @@ check_environment() {
   printf 'Language: %s\n' "$LANGUAGE"
   printf 'Beam size: %s\n' "$BEAM_SIZE"
   printf 'Terms limit: %s\n' "$TERMS_LIMIT"
+  printf 'History limit: %s\n' "$HISTORY_LIMIT"
   [ -f "$BUILTIN_TERMS_FILE" ] && printf 'Built-in terms: %s\n' "$BUILTIN_TERMS_FILE"
   [ -f "$TERMS_FILE" ] && printf 'User terms: %s\n' "$TERMS_FILE"
   [ -f "$BUILTIN_REPLACEMENTS_FILE" ] && printf 'Built-in replacements: %s\n' "$BUILTIN_REPLACEMENTS_FILE"
   [ -f "$REPLACEMENTS_FILE" ] && printf 'User replacements: %s\n' "$REPLACEMENTS_FILE"
+  printf 'History file: %s\n' "$HISTORY_FILE"
   printf 'voice-to-text check passed.\n'
 }
 
-if [ "${1:-}" = "--setup" ]; then
-  setup_backend
-  exit 0
-fi
+init_config() {
+  mkdir -p "$CONFIG_DIR"
+  if [ ! -f "$TERMS_FILE" ]; then
+    cat > "$TERMS_FILE" <<'EOF'
+# Personal high-frequency terms, one per line.
+# Keep this list focused: project names, product names, commands, libraries, and words you say often.
+墨刃工坊
+语贴
+OpenCode
+MiMoCode
+EOF
+  fi
+  if [ ! -f "$REPLACEMENTS_FILE" ]; then
+    cat > "$REPLACEMENTS_FILE" <<'EOF'
+# Literal post-transcription replacements. Format: wrong<TAB>right
+open code	OpenCode
+git hub	GitHub
+read me	README
+EOF
+  fi
+  printf 'Config directory: %s\n' "$CONFIG_DIR"
+  printf 'Terms file: %s\n' "$TERMS_FILE"
+  printf 'Replacements file: %s\n' "$REPLACEMENTS_FILE"
+}
 
-if [ "${1:-}" = "--check" ]; then
-  check_environment
-  exit 0
-fi
+doctor_check() {
+  local label="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then
+    printf 'ok   %s\n' "$label"
+    return 0
+  fi
+  printf 'fail %s\n' "$label"
+  return 1
+}
+
+doctor() {
+  local failed=0
+
+  printf 'voice-to-text doctor\n'
+  printf 'Data dir: %s\n' "$DATA_DIR"
+  printf 'Config dir: %s\n' "$CONFIG_DIR"
+  printf 'Runtime dir: %s\n' "$TMP_DIR"
+
+  doctor_check "ffmpeg" command -v ffmpeg || failed=1
+  if [ "$AUDIO_FORMAT" = "pulse" ]; then
+    if command -v pactl >/dev/null 2>&1 || command -v wpctl >/dev/null 2>&1; then
+      printf 'ok   PulseAudio/PipeWire tools\n'
+    else
+      printf 'warn PulseAudio/PipeWire tools not found\n'
+    fi
+  fi
+  if has_clipboard_backend; then
+    printf 'ok   clipboard backend\n'
+  else
+    printf 'fail clipboard backend\n'
+    failed=1
+  fi
+  if [ -x "$VENV_DIR/bin/python" ] && "$VENV_DIR/bin/python" -c 'import faster_whisper, zhconv' >/dev/null 2>&1; then
+    printf 'ok   ASR venv: %s\n' "$VENV_DIR/bin/python"
+  elif python3 -c 'import faster_whisper' >/dev/null 2>&1; then
+    printf 'ok   system python faster-whisper\n'
+  elif command -v whisper >/dev/null 2>&1; then
+    printf 'ok   whisper CLI\n'
+  else
+    printf 'fail ASR backend\n'
+    failed=1
+  fi
+  [ -f "$BUILTIN_TERMS_FILE" ] && printf 'ok   built-in terms\n' || printf 'warn built-in terms missing\n'
+  [ -f "$BUILTIN_REPLACEMENTS_FILE" ] && printf 'ok   built-in replacements\n' || printf 'warn built-in replacements missing\n'
+  [ -f "$TERMS_FILE" ] && printf 'ok   user terms\n' || printf 'info user terms not initialized\n'
+  [ -f "$REPLACEMENTS_FILE" ] && printf 'ok   user replacements\n' || printf 'info user replacements not initialized\n'
+
+  case "$BEAM_SIZE" in
+    ''|*[!0-9]*|0) printf 'fail VOICE_TO_TEXT_BEAM_SIZE\n'; failed=1 ;;
+    *) printf 'ok   VOICE_TO_TEXT_BEAM_SIZE=%s\n' "$BEAM_SIZE" ;;
+  esac
+  case "$TERMS_LIMIT" in
+    ''|*[!0-9]*) printf 'fail VOICE_TO_TEXT_TERMS_LIMIT\n'; failed=1 ;;
+    *) printf 'ok   VOICE_TO_TEXT_TERMS_LIMIT=%s\n' "$TERMS_LIMIT" ;;
+  esac
+  case "$HISTORY_LIMIT" in
+    ''|*[!0-9]*) printf 'fail VOICE_TO_TEXT_HISTORY_LIMIT\n'; failed=1 ;;
+    *) printf 'ok   VOICE_TO_TEXT_HISTORY_LIMIT=%s\n' "$HISTORY_LIMIT" ;;
+  esac
+
+  [ "$failed" -eq 0 ] || return 1
+}
+
+append_history() {
+  local text="$1"
+  local tmp_file clean_text
+
+  [ "$HISTORY_LIMIT" -gt 0 ] || return 0
+  mkdir -p "$(dirname "$HISTORY_FILE")"
+  clean_text="$(printf '%s' "$text" | tr '\t\n' '  ')"
+  printf '%s\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$clean_text" >> "$HISTORY_FILE"
+  tmp_file="$HISTORY_FILE.tmp.$$"
+  tail -n "$HISTORY_LIMIT" "$HISTORY_FILE" > "$tmp_file" && mv "$tmp_file" "$HISTORY_FILE"
+  rm -f "$tmp_file" >/dev/null 2>&1 || true
+}
+
+show_history() {
+  if [ ! -s "$HISTORY_FILE" ]; then
+    printf 'No history yet.\n'
+    return 0
+  fi
+  awk -F '\t' '{ printf "%d. [%s] %s\n", NR, $1, $2 }' "$HISTORY_FILE"
+}
+
+last_history_text() {
+  local line=""
+  [ -s "$HISTORY_FILE" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do :; done < "$HISTORY_FILE"
+  [ -n "$line" ] || return 1
+  printf '%s' "${line#*$'\t'}"
+}
+
+usage() {
+  cat <<'EOF'
+Usage: voice-to-text [command]
+
+Commands:
+  --setup        Install or update the local ASR backend
+  --check        Check required runtime dependencies
+  --doctor       Print a fuller diagnostic report
+  --init-config  Create personal terms and correction files
+  --history      Show recent transcripts
+  --copy-last    Copy the latest transcript to the clipboard
+  --help         Show this help
+
+Run without a command to record, transcribe, and copy text.
+EOF
+}
 
 copy_text() {
   local text="$1"
@@ -194,6 +327,44 @@ copy_text() {
     return 1
   fi
 }
+
+case "${1:-}" in
+  --setup)
+    setup_backend
+    exit 0
+    ;;
+  --check)
+    check_environment
+    exit 0
+    ;;
+  --doctor)
+    doctor
+    exit $?
+    ;;
+  --init-config)
+    init_config
+    exit 0
+    ;;
+  --history)
+    show_history
+    exit 0
+    ;;
+  --copy-last)
+    has_clipboard_backend || die "Missing clipboard backend. Install wl-clipboard on Wayland, or xclip/xsel on X11."
+    text="$(last_history_text)" || die "No history yet."
+    copy_text "$text" || die "Clipboard copy failed."
+    printf '%s\n' "$text"
+    exit 0
+    ;;
+  --help|-h)
+    usage
+    exit 0
+    ;;
+  --*)
+    usage >&2
+    exit 2
+    ;;
+esac
 
 transcribe_with_python_faster_whisper() {
   local audio_file="$1"
@@ -361,6 +532,7 @@ fi
 [ -n "$text" ] || die "No speech was recognized."
 
 printf '%s\n' "$text" > "$text_file"
+append_history "$text"
 copy_text "$text" || die "Text recognized, but clipboard copy failed. Text file: $text_file"
 
 notify "Copied to clipboard. Paste with Ctrl+V."
