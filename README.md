@@ -20,7 +20,8 @@
 ## 功能特性
 
 - 本地语音识别：使用 `faster-whisper`
-- 默认中文识别，也可以切换语言
+- 默认自动识别语言，适合中英混合短句
+- 中文输出会尽量转换为简体
 - 默认 CPU `int8` 模式，不需要 CUDA
 - Wayland 剪贴板：`wl-copy`
 - X11 剪贴板回退：`xclip` 或 `xsel`
@@ -80,13 +81,19 @@ niri msg action load-config-file
 
 ## 配置
 
-默认识别中文：
+默认自动识别语言，适合中英混合：
 
 ```bash
 voice-to-text
 ```
 
-切换语言，例如英文：
+如果你只说中文，可以强制中文：
+
+```bash
+VOICE_TO_TEXT_LANGUAGE=zh voice-to-text
+```
+
+如果你只说英文，可以强制英文：
 
 ```bash
 VOICE_TO_TEXT_LANGUAGE=en voice-to-text
@@ -96,6 +103,18 @@ VOICE_TO_TEXT_LANGUAGE=en voice-to-text
 
 ```bash
 VOICE_TO_TEXT_MODEL=base voice-to-text
+```
+
+默认 beam size 是 `5`，准确率更好但会比贪心解码慢一点。可以调整：
+
+```bash
+VOICE_TO_TEXT_BEAM_SIZE=3 voice-to-text
+```
+
+默认会给 Whisper 一段中英混合提示，帮助它保留英文单词、技术名词和产品名。可以覆盖：
+
+```bash
+VOICE_TO_TEXT_INITIAL_PROMPT="普通话和 English 混合输入，中文用简体。" voice-to-text
 ```
 
 模型选择建议：
@@ -179,7 +198,7 @@ Linux 上已经有更成熟的听写项目，比如 `nerd-dictation`。这个项
 - 最近几次转写历史
 - 更友好的安装检查
 - GNOME/KDE/sway/hyprland 快捷键示例
-- 中英文自动识别模式
+- 更好的中英文混合识别
 
 ## 卸载
 
@@ -219,7 +238,8 @@ It was originally built for fast voice conversations with AI tools. It does not 
 ## Features
 
 - Local transcription with `faster-whisper`
-- Chinese by default, configurable via environment variables
+- Automatic language detection by default, suitable for mixed Chinese and English
+- Chinese output is converted to Simplified Chinese when possible
 - CPU `int8` mode by default, no CUDA required
 - Wayland clipboard support via `wl-copy`
 - X11 fallback via `xclip` or `xsel`

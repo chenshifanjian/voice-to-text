@@ -2,8 +2,10 @@
 set -euo pipefail
 
 APP_NAME="voice-to-text"
-LANGUAGE="${VOICE_TO_TEXT_LANGUAGE:-zh}"
+LANGUAGE="${VOICE_TO_TEXT_LANGUAGE:-auto}"
 MODEL="${VOICE_TO_TEXT_MODEL:-small}"
+BEAM_SIZE="${VOICE_TO_TEXT_BEAM_SIZE:-5}"
+INITIAL_PROMPT="${VOICE_TO_TEXT_INITIAL_PROMPT:-以下是普通话和 English 混合的语音输入，请保留英文单词、技术名词、产品名和代码术语，中文使用简体字。}"
 TMP_DIR="${XDG_RUNTIME_DIR:-/tmp}/voice-to-text"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/voice-to-text"
 VENV_DIR="$DATA_DIR/venv"
@@ -29,8 +31,10 @@ die() {
 setup_backend() {
   command -v uv >/dev/null 2>&1 || die "Missing uv. Install uv first, then run: voice-to-text --setup"
   mkdir -p "$DATA_DIR"
-  uv venv "$VENV_DIR"
-  uv pip install --python "$VENV_DIR/bin/python" faster-whisper
+  if [ ! -x "$VENV_DIR/bin/python" ]; then
+    uv venv "$VENV_DIR"
+  fi
+  uv pip install --python "$VENV_DIR/bin/python" faster-whisper zhconv
   notify "Speech recognition backend is installed."
 }
 
@@ -54,14 +58,28 @@ copy_text() {
 
 transcribe_with_python_faster_whisper() {
   local audio_file="$1"
-  python3 - "$audio_file" "$MODEL" "$LANGUAGE" <<'PY'
+  python3 - "$audio_file" "$MODEL" "$LANGUAGE" "$BEAM_SIZE" "$INITIAL_PROMPT" <<'PY'
 import sys
 from faster_whisper import WhisperModel
 
-audio_file, model_name, language = sys.argv[1:4]
+audio_file, model_name, language, beam_size, initial_prompt = sys.argv[1:6]
 model = WhisperModel(model_name, device="cpu", compute_type="int8")
-segments, _ = model.transcribe(audio_file, language=language, vad_filter=True)
-print("".join(segment.text for segment in segments).strip())
+kwargs = {
+    "vad_filter": True,
+    "beam_size": int(beam_size),
+    "condition_on_previous_text": False,
+    "initial_prompt": initial_prompt or None,
+}
+if language != "auto":
+    kwargs["language"] = language
+segments, _ = model.transcribe(audio_file, **kwargs)
+text = "".join(segment.text for segment in segments).strip()
+try:
+    from zhconv import convert
+    text = convert(text, "zh-cn")
+except Exception:
+    pass
+print(text)
 PY
 }
 
@@ -74,14 +92,28 @@ transcribe() {
   fi
 
   if [ -x "$VENV_DIR/bin/python" ] && "$VENV_DIR/bin/python" -c 'import faster_whisper' >/dev/null 2>&1; then
-    "$VENV_DIR/bin/python" - "$audio_file" "$MODEL" "$LANGUAGE" <<'PY'
+    "$VENV_DIR/bin/python" - "$audio_file" "$MODEL" "$LANGUAGE" "$BEAM_SIZE" "$INITIAL_PROMPT" <<'PY'
 import sys
 from faster_whisper import WhisperModel
 
-audio_file, model_name, language = sys.argv[1:4]
+audio_file, model_name, language, beam_size, initial_prompt = sys.argv[1:6]
 model = WhisperModel(model_name, device="cpu", compute_type="int8")
-segments, _ = model.transcribe(audio_file, language=language, vad_filter=True)
-print("".join(segment.text for segment in segments).strip())
+kwargs = {
+    "vad_filter": True,
+    "beam_size": int(beam_size),
+    "condition_on_previous_text": False,
+    "initial_prompt": initial_prompt or None,
+}
+if language != "auto":
+    kwargs["language"] = language
+segments, _ = model.transcribe(audio_file, **kwargs)
+text = "".join(segment.text for segment in segments).strip()
+try:
+    from zhconv import convert
+    text = convert(text, "zh-cn")
+except Exception:
+    pass
+print(text)
 PY
     return
   fi
@@ -89,7 +121,11 @@ PY
   if command -v whisper >/dev/null 2>&1; then
     local out_dir="$TMP_DIR/whisper-output-$$"
     mkdir -p "$out_dir"
-    whisper "$audio_file" --model "$MODEL" --language "$LANGUAGE" --output_format txt --output_dir "$out_dir" >/dev/null
+    if [ "$LANGUAGE" = "auto" ]; then
+      whisper "$audio_file" --model "$MODEL" --initial_prompt "$INITIAL_PROMPT" --output_format txt --output_dir "$out_dir" >/dev/null
+    else
+      whisper "$audio_file" --model "$MODEL" --language "$LANGUAGE" --initial_prompt "$INITIAL_PROMPT" --output_format txt --output_dir "$out_dir" >/dev/null
+    fi
     sed -n '1,$p' "$out_dir/$(basename "${audio_file%.*}").txt"
     return
   fi
