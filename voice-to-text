@@ -899,10 +899,27 @@ transcribe_with_python_faster_whisper() {
   python3 - "$audio_file" "$MODEL" "$LANGUAGE" "$BEAM_SIZE" "$prompt" "$hotwords" "$BUILTIN_REPLACEMENTS_FILE" "$REPLACEMENTS_FILE" <<'PY'
 import sys
 import re
+from pathlib import Path
 from faster_whisper import WhisperModel
 
 audio_file, model_name, language, beam_size, initial_prompt, hotwords = sys.argv[1:7]
 replacement_files = sys.argv[7:]
+
+def resolve_model(model_name):
+    model_path = Path(model_name).expanduser()
+    if model_path.exists():
+        return str(model_path), True
+
+    repo_name = model_name
+    if "/" not in repo_name:
+        repo_name = f"Systran/faster-whisper-{repo_name}"
+    cache_name = "models--" + repo_name.replace("/", "--")
+    snapshots = Path.home() / ".cache" / "huggingface" / "hub" / cache_name / "snapshots"
+    if snapshots.exists():
+        cached = sorted(path for path in snapshots.iterdir() if path.is_dir())
+        if cached:
+            return str(cached[-1]), True
+    return model_name, False
 
 def apply_replacements(text):
     for replacement_file in replacement_files:
@@ -921,7 +938,8 @@ def apply_replacements(text):
         text = re.sub(r'(?<![A-Za-z])Z(?=\d)', '', text)
     return text
 
-model = WhisperModel(model_name, device="cpu", compute_type="int8")
+resolved_model, local_only = resolve_model(model_name)
+model = WhisperModel(resolved_model, device="cpu", compute_type="int8", local_files_only=local_only)
 kwargs = {
     "vad_filter": True,
     "beam_size": int(beam_size),
@@ -953,10 +971,27 @@ transcribe() {
     "$VENV_DIR/bin/python" - "$audio_file" "$MODEL" "$LANGUAGE" "$BEAM_SIZE" "$prompt" "$hotwords" "$BUILTIN_REPLACEMENTS_FILE" "$REPLACEMENTS_FILE" <<'PY'
 import sys
 import re
+from pathlib import Path
 from faster_whisper import WhisperModel
 
 audio_file, model_name, language, beam_size, initial_prompt, hotwords = sys.argv[1:7]
 replacement_files = sys.argv[7:]
+
+def resolve_model(model_name):
+    model_path = Path(model_name).expanduser()
+    if model_path.exists():
+        return str(model_path), True
+
+    repo_name = model_name
+    if "/" not in repo_name:
+        repo_name = f"Systran/faster-whisper-{repo_name}"
+    cache_name = "models--" + repo_name.replace("/", "--")
+    snapshots = Path.home() / ".cache" / "huggingface" / "hub" / cache_name / "snapshots"
+    if snapshots.exists():
+        cached = sorted(path for path in snapshots.iterdir() if path.is_dir())
+        if cached:
+            return str(cached[-1]), True
+    return model_name, False
 
 def apply_replacements(text):
     for replacement_file in replacement_files:
@@ -975,7 +1010,8 @@ def apply_replacements(text):
         text = re.sub(r'(?<![A-Za-z])Z(?=\d)', '', text)
     return text
 
-model = WhisperModel(model_name, device="cpu", compute_type="int8")
+resolved_model, local_only = resolve_model(model_name)
+model = WhisperModel(resolved_model, device="cpu", compute_type="int8", local_files_only=local_only)
 kwargs = {
     "vad_filter": True,
     "beam_size": int(beam_size),

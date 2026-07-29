@@ -297,6 +297,8 @@ Whisper 模型通常会缓存到 Hugging Face 缓存目录，例如：
 ~/.cache/huggingface
 ```
 
+语贴启动转写时会优先解析并使用本地 Hugging Face 缓存里的 `faster-whisper` 模型快照。如果本地已有模型，会直接传本地路径并启用 `local_files_only`，避免每次重启后因为无法访问 Hugging Face 而卡在联网检查。只有第一次使用某个模型、切换到未缓存模型，或缓存被删除时，才需要联网下载。
+
 临时录音、转写文本和错误日志位于：
 
 ```text
@@ -343,7 +345,11 @@ ${XDG_RUNTIME_DIR}/voice-to-text/recording-error-*.log
 - X11 用户确认安装了 `xclip` 或 `xsel`
 - 确认当前会话里存在 `WAYLAND_DISPLAY` 或 `DISPLAY`
 
-如果第一次运行很慢，通常是在下载或加载 Whisper 模型。等第一次完成后，再次使用会快很多。
+如果第一次运行很慢，通常是在下载或加载 Whisper 模型。等第一次完成后，再次使用会直接复用本地缓存。如果重启后不开代理仍然很慢，先确认模型缓存目录还在：
+
+```text
+~/.cache/huggingface/hub/models--Systran--faster-whisper-small
+```
 
 如果你看到 CUDA 相关错误，这个项目默认已经强制使用 CPU `int8`，通常不需要安装 CUDA。请确认你使用的是当前版本脚本。
 
@@ -489,6 +495,8 @@ VOICE_TO_TEXT_VISUALIZER=spectrum voice-to-text
 ```
 
 Available visualizers: `waveform`, `spectrum`.
+
+Transcription prefers local Hugging Face cache snapshots for `faster-whisper` models. If a cached model exists, the script passes the local snapshot path and enables `local_files_only`, avoiding slow network checks after reboot when Hugging Face is unreachable. A network connection is only needed for the first use of a model, switching to an uncached model, or after deleting the cache.
 
 Useful commands:
 
