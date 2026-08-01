@@ -6,6 +6,44 @@
 
 按下快捷键，说一句话，停止录音。它会用本地 Whisper 模型把语音转成文字，并复制到剪贴板。接下来你只需要在聊天框、编辑器或浏览器输入框里按 `Ctrl+V`。
 
+## 项目状态（墨刃工坊内部）
+
+- 业务域：软件工具
+- 产品或系统：语贴
+- 项目性质：工具开发
+- 版本或阶段：护航中
+- 当前状态：护航中
+- 维护状态：长期运行
+- 负责人：王文龙
+- 参与人员：无
+- 最近更新时间：2026-08-01
+- GitHub：`https://github.com/chenshifanjian/voice-to-text`
+
+### 运行入口
+
+- 命令：`~/.local/bin/voice-to-text`
+- 桌面入口：`~/.local/share/applications/voice-to-text.desktop`
+- 程序数据：`~/.local/share/voice-to-text`
+- 详细安装和使用方式见本文下方各章节。
+
+### 巡检方式
+
+- 确认 `voice-to-text` 命令可执行，快捷键能正常触发录音。
+- 确认录音、转写、剪贴板复制、通知四个环节都能走通。
+- 确认 Whisper 模型缓存仍在，未被其他项目清理。
+- 确认 `ffmpeg` 和剪贴板工具（`wl-copy` / `xclip` / `xsel`）仍可用。
+
+### 常见故障
+
+- 首次转写慢：需要下载 Whisper 模型，属正常现象，模型缓存后即可复用。
+- 其他故障现象请在本节持续补充，记录现象、原因和处理方式。
+
+### 后续方向
+
+见下方「路线图」章节。护航期间以保证可用为主，路线图内容按需推进。
+
+---
+
 这个工具最初是为“和 AI 快速语音交流”做的：不需要打开复杂应用，不需要常驻一个大服务，也不需要把录音发到云端。它只做一件事：把你刚说的话，尽快变成可以粘贴的文字。
 
 ## 适合谁
@@ -152,7 +190,7 @@ VOICE_TO_TEXT_BEAM_SIZE=3 voice-to-text
 VOICE_TO_TEXT_INITIAL_PROMPT="普通话和 English 混合输入，中文用简体。" voice-to-text
 ```
 
-安装脚本会额外安装一份计算机专有名词 starter 词库，来源参考了 Wikipedia 的计算机科学、计算机硬件和人工智能术语表，并补充了常见开发工具、AI 工具和 Linux 桌面词。运行时会把前 `40` 个词作为 `faster-whisper` hotwords 使用，减少专有名词对普通中文和数字听写的干扰，基本不增加识别时间：
+安装脚本会额外安装一份计算机专有名词 starter 词库，来源参考了 Wikipedia 的计算机科学、计算机硬件和人工智能术语表，并补充了常见开发工具、AI 工具和 Linux 桌面词。运行时优先读取个人词库，再从内置词库补足，最多取前 `40` 个安全词作为 `faster-whisper` hotwords 使用，减少专有名词对普通中文和数字听写的干扰，基本不增加识别时间：
 
 ```text
 ~/.local/share/voice-to-text/computer-terms.txt
@@ -197,6 +235,8 @@ read me	README
 ```
 
 这套机制适合慢慢养：starter 词库只放通用计算机词和常见工具名，个人词库更适合放你自己的项目名、产品名、同事名、缩写、命令、库名和常说的 prompt 术语。如果你发现某个计算机术语、AI 工具名、Linux 桌面词或常见误识别特别高频，欢迎通过 issue 或 pull request 投稿，把它加进默认词库或纠错表。
+
+为了避免静音或不确定语音时出现 `UDP, UDP-8, UDP-8...` 这类 hotwords 幻觉，语贴默认不会把很短的全大写协议/编码缩写作为 hotwords 使用。转写阶段也启用了重复抑制，后处理会过滤明显的大段重复技术词输出。
 
 建议优先贡献这类内容：
 
@@ -262,6 +302,8 @@ VOICE_TO_TEXT_THEME=light voice-to-text
 可选值：`light`、`dark`。
 
 脚本带单实例保护：如果一次录音还没结束，再次触发快捷键会提示已有实例在运行，避免多个录音进程互相抢麦克风。
+
+锁文件只由创建它的录音实例清理；运行 `--check` 或 `--doctor` 不会误删正在录音实例的锁。异常退出时，语贴会恢复可能处于暂停状态的录音进程，并按 `SIGINT`、`SIGTERM`、`SIGKILL` 顺序限时回收，降低残留录音进程的风险。
 
 模型选择建议：
 
@@ -466,7 +508,7 @@ VOICE_TO_TEXT_MODEL=base voice-to-text
 
 The default prompt is tuned for mixed Chinese, English words, product names, commands, and numbers. Ordinary numbers are requested as Arabic numerals without extra leading letters.
 
-The installer also ships a starter computer terminology list and literal correction table. The first `40` terms are passed to `faster-whisper` as `hotwords`, instead of being appended directly to the prompt, to reduce interference with ordinary Chinese and number dictation:
+The installer also ships a starter computer terminology list and literal correction table. Personal terms are loaded first, then safe built-in terms fill the remaining slots up to `40`. They are passed to `faster-whisper` as `hotwords`, instead of being appended directly to the prompt, to reduce interference with ordinary Chinese and number dictation:
 
 ```text
 ~/.local/share/voice-to-text/computer-terms.txt
@@ -481,6 +523,8 @@ Add personal terms and corrections here:
 ```
 
 The starter list is intentionally bounded. Add project-specific words locally, and contribute broadly useful developer, AI, Linux desktop, and correction terms through issues or pull requests.
+
+Short all-caps protocol or encoding tokens are filtered out of default hotwords to reduce hallucinated repeats such as `UDP, UDP-8...`. Decoding also uses repetition controls, and obvious repeated technical-token output is filtered after transcription.
 
 The recording window defaults to dark mode. Force light mode with:
 
