@@ -5,7 +5,7 @@ APP_NAME="语贴"
 LANGUAGE="${VOICE_TO_TEXT_LANGUAGE:-auto}"
 MODEL="${VOICE_TO_TEXT_MODEL:-small}"
 BEAM_SIZE="${VOICE_TO_TEXT_BEAM_SIZE:-5}"
-INITIAL_PROMPT="${VOICE_TO_TEXT_INITIAL_PROMPT:-这是日常语音输入，可能包含中文、English words、产品名、命令和数字。请按实际发音转写，中文使用简体字，英文单词保留英文，普通数字识别为阿拉伯数字，不要在数字前添加字母。}"
+INITIAL_PROMPT="${VOICE_TO_TEXT_INITIAL_PROMPT:-以下是一段语音转文字的结果，内容包含中文简体字、English words、产品名和阿拉伯数字。}"
 if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
   TMP_DIR="$XDG_RUNTIME_DIR/voice-to-text"
 else

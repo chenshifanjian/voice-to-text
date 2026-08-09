@@ -184,10 +184,10 @@ VOICE_TO_TEXT_MODEL=base voice-to-text
 VOICE_TO_TEXT_BEAM_SIZE=3 voice-to-text
 ```
 
-默认会给 Whisper 一段中英混合提示，帮助它保留英文单词、技术名词和产品名。可以覆盖：
+默认会给 Whisper 一段简短的自然风格提示，作为转写结果的样子参考，帮助保留英文单词、产品名和阿拉伯数字。注意 Whisper 的 `initial_prompt` 不是指令，不能用"请……""不要……"这类命令式文字，否则可能把提示词本身回显成转写结果。可以覆盖：
 
 ```bash
-VOICE_TO_TEXT_INITIAL_PROMPT="普通话和 English 混合输入，中文用简体。" voice-to-text
+VOICE_TO_TEXT_INITIAL_PROMPT="以下是一段语音转文字的结果，内容包含中文简体字、English words 和阿拉伯数字。" voice-to-text
 ```
 
 安装脚本会额外安装一份计算机专有名词 starter 词库，来源参考了 Wikipedia 的计算机科学、计算机硬件和人工智能术语表，并补充了常见开发工具、AI 工具和 Linux 桌面词。运行时优先读取个人词库，再从内置词库补足，最多取前 `40` 个安全词作为 `faster-whisper` hotwords 使用，减少专有名词对普通中文和数字听写的干扰，基本不增加识别时间：
@@ -506,7 +506,7 @@ Change model:
 VOICE_TO_TEXT_MODEL=base voice-to-text
 ```
 
-The default prompt is tuned for mixed Chinese, English words, product names, commands, and numbers. Ordinary numbers are requested as Arabic numerals without extra leading letters.
+The default prompt is a short, natural example of what the transcript should look like, covering Simplified Chinese, English words, product names, and Arabic numerals. Whisper's `initial_prompt` is not an instruction list: imperative phrases like "please..." or "do not..." can get echoed back as part of the transcript, so the default prompt avoids them.
 
 The installer also ships a starter computer terminology list and literal correction table. Personal terms are loaded first, then safe built-in terms fill the remaining slots up to `40`. They are passed to `faster-whisper` as `hotwords`, instead of being appended directly to the prompt, to reduce interference with ordinary Chinese and number dictation:
 
