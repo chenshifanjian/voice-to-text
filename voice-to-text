@@ -3,7 +3,7 @@ set -euo pipefail
 
 APP_NAME="语贴"
 LANGUAGE="${VOICE_TO_TEXT_LANGUAGE:-auto}"
-MODEL="${VOICE_TO_TEXT_MODEL:-small}"
+MODEL="${VOICE_TO_TEXT_MODEL:-large-v3-turbo}"
 BEAM_SIZE="${VOICE_TO_TEXT_BEAM_SIZE:-5}"
 INITIAL_PROMPT="${VOICE_TO_TEXT_INITIAL_PROMPT:-以下是一段语音转文字的结果，内容包含中文简体字、English words、产品名和阿拉伯数字。}"
 if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
@@ -1027,12 +1027,16 @@ resolved_model, local_only = resolve_model(model_name)
 model = WhisperModel(resolved_model, device="cpu", compute_type="int8", local_files_only=local_only)
 kwargs = {
     "vad_filter": True,
+    "vad_parameters": dict(
+        min_silence_duration_ms=500,
+        speech_pad_ms=200,
+    ),
     "beam_size": int(beam_size),
-    "temperature": 0.0,
-    "repetition_penalty": 1.15,
+    "temperature": [0.0, 0.2, 0.4],
+    "repetition_penalty": 1.2,
     "no_repeat_ngram_size": 3,
-    "no_speech_threshold": 0.5,
-    "hallucination_silence_threshold": 1.0,
+    "no_speech_threshold": 0.4,
+    "hallucination_silence_threshold": 2.0,
     "condition_on_previous_text": False,
     "initial_prompt": initial_prompt or None,
     "hotwords": hotwords or None,
@@ -1127,12 +1131,16 @@ resolved_model, local_only = resolve_model(model_name)
 model = WhisperModel(resolved_model, device="cpu", compute_type="int8", local_files_only=local_only)
 kwargs = {
     "vad_filter": True,
+    "vad_parameters": dict(
+        min_silence_duration_ms=500,
+        speech_pad_ms=200,
+    ),
     "beam_size": int(beam_size),
-    "temperature": 0.0,
-    "repetition_penalty": 1.15,
+    "temperature": [0.0, 0.2, 0.4],
+    "repetition_penalty": 1.2,
     "no_repeat_ngram_size": 3,
-    "no_speech_threshold": 0.5,
-    "hallucination_silence_threshold": 1.0,
+    "no_speech_threshold": 0.4,
+    "hallucination_silence_threshold": 2.0,
     "condition_on_previous_text": False,
     "initial_prompt": initial_prompt or None,
     "hotwords": hotwords or None,

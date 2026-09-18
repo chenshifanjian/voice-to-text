@@ -172,10 +172,10 @@ VOICE_TO_TEXT_LANGUAGE=zh voice-to-text
 VOICE_TO_TEXT_LANGUAGE=en voice-to-text
 ```
 
-默认模型是 `small`。如果你想更快，可以换成 `base`：
+默认模型是 `large-v3-turbo`（准确率最高且速度合理）。如果你想更快，可以换成 `small` 或 `base`：
 
 ```bash
-VOICE_TO_TEXT_MODEL=base voice-to-text
+VOICE_TO_TEXT_MODEL=small voice-to-text
 ```
 
 默认 beam size 是 `5`，准确率更好但会比贪心解码慢一点。可以调整：
@@ -309,8 +309,9 @@ VOICE_TO_TEXT_THEME=light voice-to-text
 
 - `tiny`：最快，准确率最低
 - `base`：较快，适合短句和轻量机器
-- `small`：默认选择，速度和准确率比较均衡
-- `medium`：更准，但更慢，CPU 上等待时间会明显增加
+- `small`：速度和准确率比较均衡
+- `medium`：更准，但更慢
+- `large-v3-turbo`：默认选择，准确率最高且速度合理（CPU int8 下约 2x 实时速度）
 
 ## 安装后文件位置
 
@@ -500,10 +501,10 @@ Change language:
 VOICE_TO_TEXT_LANGUAGE=en voice-to-text
 ```
 
-Change model:
+Change model (default is `large-v3-turbo`):
 
 ```bash
-VOICE_TO_TEXT_MODEL=base voice-to-text
+VOICE_TO_TEXT_MODEL=small voice-to-text
 ```
 
 The default prompt is a short, natural example of what the transcript should look like, covering Simplified Chinese, English words, product names, and Arabic numerals. Whisper's `initial_prompt` is not an instruction list: imperative phrases like "please..." or "do not..." can get echoed back as part of the transcript, so the default prompt avoids them.
