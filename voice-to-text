@@ -3,7 +3,7 @@ set -euo pipefail
 
 APP_NAME="语贴"
 LANGUAGE="${VOICE_TO_TEXT_LANGUAGE:-auto}"
-MODEL="${VOICE_TO_TEXT_MODEL:-large-v3-turbo}"
+MODEL="${VOICE_TO_TEXT_MODEL:-medium}"
 BEAM_SIZE="${VOICE_TO_TEXT_BEAM_SIZE:-5}"
 INITIAL_PROMPT="${VOICE_TO_TEXT_INITIAL_PROMPT:-以下是一段语音转文字的结果，内容包含中文简体字、English words、产品名和阿拉伯数字。}"
 if [ -n "${XDG_RUNTIME_DIR:-}" ]; then

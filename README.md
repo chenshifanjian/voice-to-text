@@ -172,7 +172,7 @@ VOICE_TO_TEXT_LANGUAGE=zh voice-to-text
 VOICE_TO_TEXT_LANGUAGE=en voice-to-text
 ```
 
-默认模型是 `large-v3-turbo`（准确率最高且速度合理）。如果你想更快，可以换成 `small` 或 `base`：
+默认模型是 `medium`（准确率和速度的最佳平衡）。如果你想更快，可以换成 `small`；如果追求最高准确率且不介意速度慢，可以换 `large-v3-turbo`：
 
 ```bash
 VOICE_TO_TEXT_MODEL=small voice-to-text
@@ -311,7 +311,7 @@ VOICE_TO_TEXT_THEME=light voice-to-text
 - `base`：较快，适合短句和轻量机器
 - `small`：速度和准确率比较均衡
 - `medium`：更准，但更慢
-- `large-v3-turbo`：默认选择，准确率最高且速度合理（CPU int8 下约 2x 实时速度）
+- `large-v3-turbo`：准确率最高，但 CPU 上较慢，需要 GPU 加速才能实用
 
 ## 安装后文件位置
 
@@ -501,7 +501,7 @@ Change language:
 VOICE_TO_TEXT_LANGUAGE=en voice-to-text
 ```
 
-Change model (default is `large-v3-turbo`):
+Change model (default is `medium`):
 
 ```bash
 VOICE_TO_TEXT_MODEL=small voice-to-text
