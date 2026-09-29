@@ -539,6 +539,13 @@ check_environment() {
     printf 'Hotword mode: disabled (SenseVoice has no hotword support; replacements still apply)\n'
   fi
   printf 'Recorder: ffmpeg -f %s -i %s\n' "$AUDIO_FORMAT" "$AUDIO_SOURCE"
+  chk_ui_backend="$(resolve_ui_backend)"
+  if [ "$chk_ui_backend" = gtk ] && chk_ui_helper="$(ui_helper_path)"; then
+    printf 'UI backend: gtk (%s)\n' "$chk_ui_helper"
+  else
+    printf 'UI backend: %s\n' "$chk_ui_backend"
+  fi
+  printf 'Max recording: %ss, keep last %s file(s)\n' "$MAX_SECONDS" "${VOICE_TO_TEXT_KEEP_FILES:-20}"
   printf 'Clipboard: available\n'
   printf 'Model: %s\n' "$MODEL"
   printf 'Language: %s\n' "$LANGUAGE"
@@ -611,6 +618,18 @@ doctor() {
     printf 'fail clipboard backend\n'
     failed=1
   fi
+  case "$(resolve_ui_backend)" in
+    gtk)
+      if doc_ui_helper="$(ui_helper_path)"; then
+        printf 'ok   UI backend: gtk (%s)\n' "$doc_ui_helper"
+      else
+        printf 'warn UI backend: gtk requested but helper missing (zenity fallback)\n'
+      fi
+      ;;
+    zenity) printf 'ok   UI backend: zenity\n' ;;
+    none) printf 'info UI backend: none (terminal, stop with Enter)\n' ;;
+    *) printf 'warn UI backend: %s\n' "$(resolve_ui_backend)" ;;
+  esac
   if sensevoice_available; then
     printf 'ok   SenseVoice venv: %s\n' "$SV_VENV_DIR/bin/python"
   else

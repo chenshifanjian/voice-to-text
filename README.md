@@ -4,7 +4,7 @@
 
 中文名叫 **语贴**：语音变成文字，然后贴到你正在使用的地方。
 
-按下快捷键，说一句话，停止录音。它会用本地 Whisper 模型把语音转成文字，并复制到剪贴板。接下来你只需要在聊天框、编辑器或浏览器输入框里按 `Ctrl+V`。
+按下快捷键，说一句话，停止录音。它会用本地语音模型（默认 SenseVoice，可回退 Whisper）把语音转成文字，并复制到剪贴板。接下来你只需要在聊天框、编辑器或浏览器输入框里按 `Ctrl+V`。
 
 ## 项目状态（墨刃工坊内部）
 
@@ -16,8 +16,11 @@
 - 维护状态：长期运行
 - 负责人：王文龙
 - 参与人员：无（仅负责人王文龙）
-- 最近更新时间：2026-08-10
+- 最近更新时间：2026-09-29
+- 最近版本：`v0.2.5`（2026-09-29）
 - GitHub：`https://github.com/chenshifanjian/voice-to-text`
+
+> 四同步位置：本地项目仓库 / GitHub 云端 / 本地安装（`~/.local/bin/voice-to-text`、`~/.local/share/voice-to-text/voice-to-text-ui.py`）/ GitHub Release。每次改动后逐个 `diff` 核对。
 
 ### 运行入口
 
@@ -35,8 +38,11 @@
 
 ### 常见故障
 
-- 首次转写慢：需要下载 Whisper 模型，属正常现象，模型缓存后即可复用。
-- 其他故障现象请在本节持续补充，记录现象、原因和处理方式。
+- 首次转写慢：需要下载模型（SenseVoice 约 900 MB，Whisper `medium` 约 1.5 GB），属正常现象，缓存后即可复用。
+- 明明说了话却提示“没听到声音”：判据是「-38 dB 以上的有效语音 ≥ 0.3 秒」。说得太短、离麦太远或麦克风增益太低会被拦；错误窗里会打印有效语音秒数、峰值 dB 和平均 dB，先看数字，再判断是不是麦克风的问题。
+- 悬浮窗不出现或界面报错：`VOICE_TO_TEXT_UI=none voice-to-text` 可以直接在终端里录音（按回车停止）；`voice-to-text --doctor` 会打印界面后端和依赖检查结果。
+- 内存盘被写满（`/run/user/$UID` 到 100%）：只会在把 `VOICE_TO_TEXT_AUDIO_SOURCE` 指向文件或不限速的 `lavfi` 源时发生，现在由 `VOICE_TO_TEXT_MAX_SECONDS` 兜底。历史残留可手工清理 `/run/user/$UID/voice-to-text/recording-*.wav`。
+- 重启后第一次很慢：先确认模型缓存目录还在（Hugging Face / ModelScope），见下方「安装后文件位置」。
 
 ### 后续方向
 
@@ -78,8 +84,10 @@
 安装系统依赖。Arch Linux 示例：
 
 ```bash
-sudo pacman -S ffmpeg uv zenity libnotify wl-clipboard
+sudo pacman -S ffmpeg uv zenity libnotify wl-clipboard python-gobject python-cairo gtk4 libadwaita
 ```
+
+其中 `python-gobject python-cairo gtk4 libadwaita` 只服务于悬浮窗界面（GTK4/libadwaita）：装了就是最好看的那个窗口，没装会自动退回 `zenity` 对话框，功能不受影响。`voice-to-text --doctor` 会直接告诉你当前用的是哪个。
 
 克隆并安装：
 
@@ -347,7 +355,9 @@ VOICE_TO_TEXT_THEME=light voice-to-text
 
 可选值：`auto`（默认）、`light`、`dark`。
 
-识别为空的情况会被提前拦下：录音平均音量低于 -45 dB（麦克风被静音、被拔掉、纯底噪）时不再送后端识别，直接提示“没听到声音”；只识别出标点的结果也会被当作无效结果。
+识别为空的情况会被提前拦下：用一次 `volumedetect,silencedetect=noise=-38dB:d=0.25` 统计出**有效语音时长**，低于 **0.3 秒**就直接提示“没听到声音”，不送后端识别。
+
+这个 0.3 秒是按真机录音标定出来的，不是拍脑袋：真人成句 1.5–5.0 秒、很短的一句真话 0.38–0.43 秒、安静房间底噪 0.07 秒、合成静音 0.00 秒——0.3 秒正好卡在「最短的真实发音」和「最后一个噪声毛刺」之间。这里刻意**不用平均音量作判据**：静音段占多数时平均值会被拉低，真人说话也会被判成静音（第一版用 `-45 dB` 平均音量阈值，实测会误杀真实语音）。提示里会同时打印有效语音秒数、峰值 dB 和平均 dB，方便核对判据是否合理。只识别出标点的结果同样会被当作无效结果。
 
 脚本带单实例保护：如果一次录音还没结束，再次触发快捷键会提示已有实例在运行，避免多个录音进程互相抢麦克风。
 
@@ -449,7 +459,7 @@ ${XDG_RUNTIME_DIR}/voice-to-text/recording-error-*.log
 如果第一次运行很慢，通常是在下载或加载 Whisper 模型。等第一次完成后，再次使用会直接复用本地缓存。如果重启后不开代理仍然很慢，先确认模型缓存目录还在：
 
 ```text
-~/.cache/huggingface/hub/models--Systran--faster-whisper-small
+~/.cache/huggingface/hub/models--Systran--faster-whisper-medium
 ```
 
 如果你看到 CUDA 相关错误，这个项目默认已经强制使用 CPU `int8`，通常不需要安装 CUDA。请确认你使用的是当前版本脚本。
@@ -475,6 +485,8 @@ Linux 上已经有更成熟的听写项目，比如 `nerd-dictation`。这个项
 - GNOME/KDE/sway/hyprland 快捷键示例
 - 持续扩充计算机术语和个人纠错词库
 - 基于真实使用反馈筛选默认术语，而不是盲目堆大词库
+- GPU 加速：本机只有 CUDA 13，而 `ctranslate2` 需要的 CUDA 12 运行库对不上，暂缓；等版本能对齐再开
+- 预热常驻服务：降低每次开口前等待模型加载的延迟（目前刻意不做常驻，保持零后台进程）
 
 ## 卸载
 
@@ -533,7 +545,7 @@ It was originally built for fast voice conversations with AI tools. It does not 
 Arch Linux example:
 
 ```bash
-sudo pacman -S ffmpeg uv zenity libnotify wl-clipboard
+sudo pacman -S ffmpeg uv zenity libnotify wl-clipboard python-gobject python-cairo gtk4 libadwaita
 ```
 
 Install the tool:
@@ -597,10 +609,10 @@ The starter list is intentionally bounded. Add project-specific words locally, a
 
 Short all-caps protocol or encoding tokens are filtered out of default hotwords to reduce hallucinated repeats such as `UDP, UDP-8...`. Decoding also uses repetition controls, and obvious repeated technical-token output is filtered after transcription.
 
-The recording window defaults to dark mode. Force light mode with:
+The recording window follows the system color scheme. Force it when needed:
 
 ```bash
-VOICE_TO_TEXT_THEME=light voice-to-text
+VOICE_TO_TEXT_THEME=light voice-to-text   # auto | light | dark
 ```
 
 The default visualization is a waveform. You can switch to spectrum bars:
@@ -610,6 +622,10 @@ VOICE_TO_TEXT_VISUALIZER=spectrum voice-to-text
 ```
 
 Available visualizers: `waveform`, `spectrum`.
+
+Pick the UI backend with `VOICE_TO_TEXT_UI=auto|gtk|zenity|none`; `none` records in the terminal and stops on Enter, which is what you want over SSH. `VOICE_TO_TEXT_MAX_SECONDS` (default 3600) caps a single take, and `VOICE_TO_TEXT_KEEP_FILES` (default 20) prunes old recordings and transcripts in `${XDG_RUNTIME_DIR}/voice-to-text`.
+
+Voice activity is gated on **effective speech duration**, not on mean volume: one pass of `volumedetect,silencedetect=noise=-38dB:d=0.25`, and at least 0.3 s of non-silence is required — otherwise the take is reported as "没听到声音" (with the measured seconds and dB levels) instead of being sent to the ASR backend. Calibrated on real recordings: full sentences 1.5–5.0 s, a single short utterance 0.38–0.43 s, quiet-room noise 0.07 s, synthetic silence 0.00 s. A mean-volume threshold was tried first and killed genuine speech, because the silent gaps dominate the average.
 
 Transcription prefers local Hugging Face cache snapshots for `faster-whisper` models. If a cached model exists, the script passes the local snapshot path and enables `local_files_only`, avoiding slow network checks after reboot when Hugging Face is unreachable. A network connection is only needed for the first use of a model, switching to an uncached model, or after deleting the cache.
 
