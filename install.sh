@@ -10,6 +10,7 @@ mkdir -p "$BIN_DIR" "$APP_DIR" "$DATA_DIR"
 install -m 0755 "$ROOT_DIR/voice-to-text" "$BIN_DIR/voice-to-text"
 install -m 0644 "$ROOT_DIR/data/computer-terms.txt" "$DATA_DIR/computer-terms.txt"
 install -m 0644 "$ROOT_DIR/data/replacements.tsv" "$DATA_DIR/replacements.tsv"
+install -m 0755 "$ROOT_DIR/data/voice-to-text-ui.py" "$DATA_DIR/voice-to-text-ui.py"
 
 cat > "$APP_DIR/voice-to-text.desktop" <<EOF
 [Desktop Entry]
@@ -23,5 +24,5 @@ Categories=Utility;
 EOF
 
 printf 'Installed voice-to-text to %s\n' "$BIN_DIR/voice-to-text"
-printf 'Installed starter terminology to %s\n' "$DATA_DIR"
+printf 'Installed starter terminology and GTK4 interface to %s\n' "$DATA_DIR"
 printf 'Install the ASR backend with: %s --setup\n' "$BIN_DIR/voice-to-text"

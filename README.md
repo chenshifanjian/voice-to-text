@@ -65,8 +65,9 @@
 - Wayland 剪贴板：`wl-copy`
 - X11 剪贴板回退：`xclip` 或 `xsel`
 - 桌面通知：`notify-send`
-- 中文小悬浮窗口：Python/Tk，录音和结果提示使用统一风格
-- 录音窗口支持录音时长、暂停/继续、停止录音、暗色/亮色切换和实时音量反馈
+- 中文小悬浮窗口：Python + GTK4/libadwaita，原生 Wayland、自动跟随显示器缩放（HiDPI）与系统深浅色主题
+- 录音窗口支持录音时长、暂停/继续、停止录音和实时音量反馈；结果窗口自动复制到剪贴板
+- 没听到声音时直接提示（不做无意义的识别），并弹出中文错误窗；无 GTK 时自动回退到 zenity
 - 不常驻后台，按需启动
 - 临时录音和日志放在 `${XDG_RUNTIME_DIR}/voice-to-text`
 - 可选个人词库和纠错表
@@ -134,22 +135,33 @@ niri msg action load-config-file
 
 之后按 `Mod+Alt+Space` 就能开始录音。
 
-录音时会显示一个小悬浮窗口、录音时长和实时音频反馈。默认可视化是波形：语贴会用 `ffmpeg` 读取麦克风 PCM 音频，按时间振幅画出类似录音软件的音波线，安静时趋近平线，有声音时随振幅起伏。右上角的太阳/月亮按钮可以在亮色和暗色之间切换。
+录音时会显示一个小悬浮窗口、录音时长和实时音频反馈。默认可视化是波形：语贴会用 `ffmpeg` 读取麦克风 PCM 音频，按时间振幅画出类似录音软件的音波线，安静时趋近平线，有声音时随振幅起伏。
 
-如果更喜欢音乐软件常见的频谱柱，可以切换：
+界面是 GTK4/libadwaita 窗口（`data/voice-to-text-ui.py`），因此自动跟随系统缩放比例和深浅色主题，不再需要手动调字号。相关环境变量：
 
 ```bash
-VOICE_TO_TEXT_VISUALIZER=spectrum voice-to-text
+VOICE_TO_TEXT_THEME=light voice-to-text        # dark | light | auto（默认 auto，跟随系统）
+VOICE_TO_TEXT_VISUALIZER=spectrum voice-to-text # waveform | spectrum（默认 waveform）
+VOICE_TO_TEXT_RESULT_TIMEOUT=8 voice-to-text   # 结果窗自动关闭秒数，0 = 不自动关闭
+VOICE_TO_TEXT_ERROR_TIMEOUT=8 voice-to-text    # 错误窗自动关闭秒数，0 = 不自动关闭
 ```
 
-可选值：`waveform`、`spectrum`。
+没有 GTK4 或不在图形会话里时，语贴会自动退回 `zenity` 对话框；纯终端里则直接打印文字。
 
-如果使用 niri，可以给标题为“语贴”的窗口加浮动规则：
+如果使用 niri，可以给语贴的窗口加浮动规则（避免被平铺，并去掉跟随主题色的焦点描边）：
 
 ```kdl
 window-rule {
-    match title="语贴"
+    match app-id=r#"^dev\.inkblade\.VoiceToTextUI$"#
     open-floating true
+    geometry-corner-radius 14
+    clip-to-geometry true
+    border { off }
+    focus-ring { off }
+}
+window-rule {
+    match app-id=r#"^dev\.inkblade\.VoiceToTextUI$"# title=r#"录音"#
+    default-floating-position x=24 y=24 relative-to="bottom-right"
 }
 ```
 
@@ -322,13 +334,15 @@ VOICE_TO_TEXT_HISTORY_LIMIT=50 voice-to-text
 VOICE_TO_TEXT_AUDIO_FORMAT=pulse VOICE_TO_TEXT_AUDIO_SOURCE=default voice-to-text
 ```
 
-录音窗口默认使用暗色主题。可以强制亮色：
+界面默认跟随系统深浅色主题。也可以强制指定：
 
 ```bash
 VOICE_TO_TEXT_THEME=light voice-to-text
 ```
 
-可选值：`light`、`dark`。
+可选值：`auto`（默认）、`light`、`dark`。
+
+识别为空的情况会被提前拦下：录音平均音量低于 -45 dB（麦克风被静音、被拔掉、纯底噪）时不再送后端识别，直接提示“没听到声音”；只识别出标点的结果也会被当作无效结果。
 
 脚本带单实例保护：如果一次录音还没结束，再次触发快捷键会提示已有实例在运行，避免多个录音进程互相抢麦克风。
 
@@ -349,6 +363,7 @@ VOICE_TO_TEXT_THEME=light voice-to-text
 ```text
 ~/.local/bin/voice-to-text
 ~/.local/share/applications/voice-to-text.desktop
+~/.local/share/voice-to-text/voice-to-text-ui.py   # GTK4 界面（录音窗/结果窗/错误窗）
 ```
 
 `voice-to-text --setup` 会创建独立 Python 环境。SenseVoice 依赖的 `kaldi-native-fbank` 等包只有 Python 3.12 的轮子，所以单独建一个环境隔离，不污染 Whisper 环境：
@@ -501,8 +516,9 @@ It was originally built for fast voice conversations with AI tools. It does not 
 - Wayland clipboard support via `wl-copy`
 - X11 fallback via `xclip` or `xsel`
 - Desktop notifications via `notify-send`
-- Unified Chinese Python/Tk recording and result windows
-- Recording window with elapsed time, pause/resume, stop, dark/light theme toggle, and live audio visualization
+- Chinese recording and result windows built with Python + GTK4/libadwaita: native Wayland, follows display scaling (HiDPI) and the system color scheme
+- Recording window with elapsed time, pause/resume, stop, and live audio visualization; result window copies to the clipboard
+- Silent recordings are detected and reported instead of sending noise to the ASR backend; falls back to `zenity` when GTK4 is unavailable
 - No background daemon
 - Personal terminology and correction files
 - Small local transcript history
@@ -619,8 +635,16 @@ To open the `语贴` window as floating in niri:
 
 ```kdl
 window-rule {
-    match title="语贴"
+    match app-id=r#"^dev\.inkblade\.VoiceToTextUI$"#
     open-floating true
+    geometry-corner-radius 14
+    clip-to-geometry true
+    border { off }
+    focus-ring { off }
+}
+window-rule {
+    match app-id=r#"^dev\.inkblade\.VoiceToTextUI$"# title=r#"录音"#
+    default-floating-position x=24 y=24 relative-to="bottom-right"
 }
 ```
 
