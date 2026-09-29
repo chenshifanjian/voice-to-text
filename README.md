@@ -140,13 +140,18 @@ niri msg action load-config-file
 界面是 GTK4/libadwaita 窗口（`data/voice-to-text-ui.py`），因此自动跟随系统缩放比例和深浅色主题，不再需要手动调字号。相关环境变量：
 
 ```bash
-VOICE_TO_TEXT_THEME=light voice-to-text        # dark | light | auto（默认 auto，跟随系统）
+VOICE_TO_TEXT_THEME=light voice-to-text         # dark | light | auto（默认 auto，跟随系统）
 VOICE_TO_TEXT_VISUALIZER=spectrum voice-to-text # waveform | spectrum（默认 waveform）
-VOICE_TO_TEXT_RESULT_TIMEOUT=8 voice-to-text   # 结果窗自动关闭秒数，0 = 不自动关闭
-VOICE_TO_TEXT_ERROR_TIMEOUT=8 voice-to-text    # 错误窗自动关闭秒数，0 = 不自动关闭
+VOICE_TO_TEXT_RESULT_TIMEOUT=8 voice-to-text    # 结果窗自动关闭秒数，0 = 不自动关闭
+VOICE_TO_TEXT_ERROR_TIMEOUT=8 voice-to-text     # 错误窗自动关闭秒数，0 = 不自动关闭
+VOICE_TO_TEXT_UI=none voice-to-text             # auto | gtk | zenity | none（默认 auto）
+VOICE_TO_TEXT_MAX_SECONDS=600 voice-to-text     # 单次录音最长秒数（默认 3600，防止无限源的录音把 /run 塞满）
+VOICE_TO_TEXT_KEEP_FILES=5 voice-to-text        # 运行目录只保留最近 N 份录音/转写（默认 20）
 ```
 
-没有 GTK4 或不在图形会话里时，语贴会自动退回 `zenity` 对话框；纯终端里则直接打印文字。
+界面后端按 `VOICE_TO_TEXT_UI` 选择：`gtk` 用 GTK4 悬浮窗，`zenity` 用系统对话框，`none` 完全不弹窗（纯终端/SSH 里 `read` 一个回车停止录音）。默认 `auto` 会依次挑可用的那个；GTK4 启动失败的兜底也一样。录音窗被关掉（点 ✕ 或进程被杀）与正常停止等价：语贴会继续收尾并转写，不会弹一个多余的"界面未能启动"。
+
+音频长度会被 `VOICE_TO_TEXT_MAX_SECONDS` 兜底截断：麦克风是实时源，正常用不到；但如果你把 `VOICE_TO_TEXT_AUDIO_SOURCE` 指向文件或不限速的 `lavfi` 源，没有这个上限它能以近万倍速写盘——曾经真的把 `/run/user/1000`（1.6G tmpfs）写到 100%。记录只留在 `/run/user/$UID/voice-to-text/`，每次运行后会按 `VOICE_TO_TEXT_KEEP_FILES` 自动清理旧录音与转写。
 
 如果使用 niri，可以给语贴的窗口加浮动规则（避免被平铺，并去掉跟随主题色的焦点描边）：
 

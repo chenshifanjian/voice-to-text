@@ -21,6 +21,10 @@ VENV_DIR="$DATA_DIR/venv"
 SV_VENV_DIR="$DATA_DIR/venv-sensevoice"
 AUDIO_FORMAT="${VOICE_TO_TEXT_AUDIO_FORMAT:-pulse}"
 AUDIO_SOURCE="${VOICE_TO_TEXT_AUDIO_SOURCE:-default}"
+# 录音最长时长（秒）。运行目录在 tmpfs（内存）上，16 kHz 单声道 ≈ 115 MB/小时，
+# 万一录音源不限速（例如把 -f lavfi 指到文件）或热键被遗忘，也不至于把内存写满。
+MAX_SECONDS="${VOICE_TO_TEXT_MAX_SECONDS:-3600}"
+UI_MODE="${VOICE_TO_TEXT_UI:-auto}"
 TERMS_LIMIT="${VOICE_TO_TEXT_TERMS_LIMIT:-40}"
 TERMS_FILE="${VOICE_TO_TEXT_TERMS_FILE:-$CONFIG_DIR/terms.txt}"
 REPLACEMENTS_FILE="${VOICE_TO_TEXT_REPLACEMENTS_FILE:-$CONFIG_DIR/replacements.tsv}"
@@ -32,6 +36,7 @@ LOCK_DIR="$TMP_DIR/lock"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ffmpeg_pid=""
 owns_lock=0
+UI_BACKEND=""
 
 umask 077
 mkdir -p "$TMP_DIR"
@@ -123,13 +128,14 @@ die() {
     exit 1
   fi
 
-  local ui_helper
-  if has_graphical_session && has_gtk4_ui && ui_helper="$(ui_helper_path)"; then
+  local ui_helper backend
+  backend="$(resolve_ui_backend)"
+  if [ "$backend" = gtk ] && ui_helper="$(ui_helper_path)"; then
     python3 "$ui_helper" error "$message" >/dev/null 2>&1 || true
     exit 1
   fi
 
-  if command -v zenity >/dev/null 2>&1 && has_graphical_session; then
+  if { [ "$backend" = gtk ] || [ "$backend" = zenity ]; } && command -v zenity >/dev/null 2>&1 && has_graphical_session; then
     zenity --error --title="$APP_NAME" --text="$message" >/dev/null 2>&1 || true
   fi
   exit 1
@@ -140,6 +146,15 @@ validate_config() {
     ''|*[!0-9]*) die "VOICE_TO_TEXT_BEAM_SIZE 必须是正整数。" ;;
   esac
   [ "$BEAM_SIZE" -gt 0 ] || die "VOICE_TO_TEXT_BEAM_SIZE 必须大于 0。"
+
+  case "$UI_MODE" in
+    auto|gtk|zenity|none) ;;
+    *) die "VOICE_TO_TEXT_UI 只能是 auto、gtk、zenity 或 none。" ;;
+  esac
+
+  case "$MAX_SECONDS" in
+    ''|*[!0-9]*|0) die "VOICE_TO_TEXT_MAX_SECONDS 必须是正整数。" ;;
+  esac
 
   case "$TERMS_LIMIT" in
     ''|*[!0-9]*) die "VOICE_TO_TEXT_TERMS_LIMIT 必须是非负整数。" ;;
@@ -305,6 +320,81 @@ audio_duration() {
     ''|*[!0-9.]*) printf '0' ;;
     *) printf '%s' "${value%%.*}" ;;
   esac
+}
+
+# 「这段录音里到底有没有人说话」——送进后端之前先判一次。
+# 只看平均音量会误伤：实测真人说话 7 条的 mean_volume 落在 -36.7 ~ -45.7 dB，
+# 而房间里没人说话、只有一点响动的录音是 -50.8 dB，两者几乎贴在一起。
+# 换用「-38 dB 以上、持续 0.25 秒以上的有效语音时长」做主判据（实测：
+# 真人说话 1.54~12.6 秒，没人说话 0~0.49 秒），峰值与语音占比做兜底，
+# 这样很短但清晰的一句（"好的"）依然能过。
+speech_activity() {
+  local src_file="$1"
+  local activity max_volume speech_seconds mean_volume duration bytes
+  activity="$(ffmpeg -hide_banner -nostdin -i "$src_file" -af "volumedetect,silencedetect=noise=-38dB:d=0.25" -f null - 2>&1 || true)"
+  mean_volume="$(printf '%s\n' "$activity" | sed -n 's/.*mean_volume: \([-0-9.]*\) dB.*/\1/p' | sed -n '1p')"
+  max_volume="$(printf '%s\n' "$activity" | sed -n 's/.*max_volume: \([-0-9.]*\) dB.*/\1/p' | sed -n '1p')"
+  duration="$(audio_duration "$src_file")"
+  # 录音被强杀（崩溃、磁盘写满、拔麦）时 WAV 头来不及收尾，RIFF 大小字段还是
+  # 0xFFFFFFFF，ffprobe 会照文件大小编出个天文数字时长（实测会报「49601 秒」）。
+  # 这种录音一律按字节数反推：录音固定是 16 kHz 单声道 s16le = 32000 字节/秒。
+  case "$duration" in ''|*[!0-9.]*) duration=0 ;; esac
+  if awk -v d="$duration" 'BEGIN { exit !(d <= 0 || d > 86400) }'; then
+    bytes="$(stat -c%s "$src_file" 2>/dev/null || echo 0)"
+    duration="$(awk -v b="$bytes" 'BEGIN { d = (b - 44) / 32000; if (d < 0) d = 0; printf "%.2f", d }')"
+  fi
+  speech_seconds="$(printf '%s\n' "$activity" | awk -v dur="$duration" '
+    /silence_start:/ { line=$0; sub(/.*silence_start:[[:space:]]*/, "", line); sub(/[^0-9.-].*$/, "", line); starts[++n]=line+0 }
+    /silence_end:/   { line=$0; sub(/.*silence_end:[[:space:]]*/,   "", line); sub(/[^0-9.-].*$/, "", line); ends[++m]=line+0 }
+    END {
+      silent = 0
+      for (i = 1; i <= n; i++) {
+        end = (i <= m) ? ends[i] : dur
+        if (end > dur) end = dur
+        if (end > starts[i]) silent += end - starts[i]
+      }
+      speech = dur - silent
+      if (speech < 0) speech = 0
+      printf "%.2f", speech
+    }')"
+  printf '%s %s %s %s\n' "${mean_volume:--99}" "${max_volume:--99}" "${speech_seconds:-0}" "$duration"
+}
+
+# 返回 0 = 判定为「没听到声音」（应拦下），1 = 有语音（继续转写）
+looks_silent() {
+  local src_file="$1" stats mean max speech duration
+  stats="$(speech_activity "$src_file")"
+  mean="$(printf '%s' "$stats" | cut -d' ' -f1)"
+  max="$(printf '%s' "$stats" | cut -d' ' -f2)"
+  speech="$(printf '%s' "$stats" | cut -d' ' -f3)"
+  duration="$(printf '%s' "$stats" | cut -d' ' -f4)"
+  SILENT_MEAN="$mean"
+  SILENT_MAX="$max"
+  SILENT_SPEECH="$speech"
+  SILENT_DURATION="$duration"
+  awk -v s="$speech" -v m="$max" -v d="$duration" 'BEGIN {
+    if (s + 0 >= 0.8) exit 1
+    if (m + 0 < -35) exit 0
+    if (d + 0 > 0 && s / d < 0.10) exit 0
+    exit 1
+  }'
+}
+
+# 运行目录在 tmpfs（内存）上，录音/转写/日志会随着使用累积，只留最近 N 份。
+prune_runtime_files() {
+  local keep="${VOICE_TO_TEXT_KEEP_FILES:-20}"
+  case "$keep" in ''|*[!0-9]*) keep=20 ;; esac
+  [ "$keep" -gt 0 ] || return 0
+  local pattern
+  for pattern in 'recording-*.wav' 'transcript-*.txt' 'error-*.log' 'recording-error-*.log' 'sensevoice-segments-*'; do
+    find "$TMP_DIR" -maxdepth 1 -name "$pattern" -printf '%T@\t%p\n' 2>/dev/null |
+      sort -rn |
+      tail -n "+$((keep + 1))" |
+      cut -f2- |
+      while IFS= read -r stale; do
+        [ -n "$stale" ] && rm -rf -- "$stale" 2>/dev/null
+      done
+  done
 }
 
 # SenseVoice 是单段模型，超过 SV_MAX_SEGMENT 的录音按静音点切分：
@@ -619,6 +709,10 @@ Environment:
   VOICE_TO_TEXT_SENSEVOICE_MAX_SEGMENT=<secs>    Split longer recordings at pauses (default: 25)
   VOICE_TO_TEXT_MODEL=<model>                    whisper model (default: medium)
   VOICE_TO_TEXT_LANGUAGE=<lang>                  auto, zh, en, yue, ja, ko (default: auto)
+  VOICE_TO_TEXT_UI=auto|gtk|zenity|none          界面后端 (default: auto)
+  VOICE_TO_TEXT_MAX_SECONDS=<secs>               单次录音最长时长 (default: 3600)
+  VOICE_TO_TEXT_KEEP_FILES=<n>                   运行目录保留最近 N 份录音/转写 (default: 20)
+  VOICE_TO_TEXT_THEME=auto|dark|light            界面主题 (default: auto)
 EOF
 }
 
@@ -667,24 +761,50 @@ sys.exit(0 if Gdk.Display.get_default() is not None else 1)
 PY
 }
 
+# 界面后端只解析一次：auto = GTK → zenity → 终端；也可以用
+# VOICE_TO_TEXT_UI=gtk|zenity|none 指定。显式指定时跳过 GTK 预检
+# （预检要 ~0.15 秒，既然指定了就直接试）。
+resolve_ui_backend() {
+  [ -n "$UI_BACKEND" ] && { printf '%s' "$UI_BACKEND"; return 0; }
+  case "$UI_MODE" in
+    gtk|zenity|none) UI_BACKEND="$UI_MODE" ;;
+    *)
+      if has_graphical_session && has_gtk4_ui; then
+        UI_BACKEND=gtk
+      elif has_graphical_session && command -v zenity >/dev/null 2>&1; then
+        UI_BACKEND=zenity
+      else
+        UI_BACKEND=none
+      fi
+      ;;
+  esac
+  printf '%s' "$UI_BACKEND"
+}
+
 # 录音进度窗：GTK4 HUD（跟随系统缩放/主题）→ zenity → 终端回车。
 
 show_recording_dialog() {
-  local ui_helper
+  local ui_helper backend
+  backend="$(resolve_ui_backend)"
 
-  if has_graphical_session && has_gtk4_ui && ui_helper="$(ui_helper_path)"; then
-    if python3 "$ui_helper" record --pid "$ffmpeg_pid" --format "$AUDIO_FORMAT" --source "$AUDIO_SOURCE"; then
+  if [ "$backend" = gtk ] && ui_helper="$(ui_helper_path)"; then
+    local rc=0 start="${EPOCHREALTIME:-0}" end
+    python3 "$ui_helper" record --pid "$ffmpeg_pid" --format "$AUDIO_FORMAT" --source "$AUDIO_SOURCE" || rc=$?
+    end="${EPOCHREALTIME:-0}"
+    # 录音窗活过 1 秒就说明它正常起来了：此时它非零退出＝被关掉/被杀，
+    # 同样按「停止录音」处理，不要弹一个骗人的「界面未能启动」再塞个 zenity 挡路。
+    if [ "$rc" -eq 0 ] || awk -v a="$start" -v b="$end" 'BEGIN { exit !(b - a >= 1) }'; then
       return 0
     fi
-    printf '语贴界面未能启动，改用系统对话框。\n' >&2
+    printf '语贴界面未能启动（退出码 %s），改用系统对话框。\n' "$rc" >&2
   fi
 
-  if command -v zenity >/dev/null 2>&1 && has_graphical_session; then
+  if { [ "$backend" = gtk ] || [ "$backend" = zenity ]; } && command -v zenity >/dev/null 2>&1 && has_graphical_session; then
     zenity --progress --title="$APP_NAME" --text="准备录音..." --percentage=50 --pulsate --cancel-label="停止录音" >/dev/null 2>&1 || true
     return
   fi
 
-  printf '正在录音。按 Enter 停止...\n' >&2
+  printf '正在录音（界面模式：%s）。按 Enter 停止...\n' "$backend" >&2
   read -r _ || true
 }
 
@@ -692,16 +812,20 @@ show_recording_dialog() {
 
 show_result_dialog() {
   local transcript_file="$1"
-  local ui_helper
+  local ui_helper backend
+  backend="$(resolve_ui_backend)"
 
-  if has_graphical_session && has_gtk4_ui && ui_helper="$(ui_helper_path)"; then
-    if python3 "$ui_helper" result "$transcript_file"; then
+  if [ "$backend" = gtk ] && ui_helper="$(ui_helper_path)"; then
+    local rc=0 start="${EPOCHREALTIME:-0}" end
+    python3 "$ui_helper" result "$transcript_file" || rc=$?
+    end="${EPOCHREALTIME:-0}"
+    if [ "$rc" -eq 0 ] || awk -v a="$start" -v b="$end" 'BEGIN { exit !(b - a >= 1) }'; then
       return 0
     fi
-    printf '语贴界面未能启动，改用系统对话框。\n' >&2
+    printf '语贴界面未能启动（退出码 %s），改用系统对话框。\n' "$rc" >&2
   fi
 
-  if command -v zenity >/dev/null 2>&1 && has_graphical_session; then
+  if { [ "$backend" = gtk ] || [ "$backend" = zenity ]; } && command -v zenity >/dev/null 2>&1 && has_graphical_session; then
     zenity --info --title="$APP_NAME" --text="已复制到剪贴板：\n\n$(sed -n '1,20p' "$transcript_file")" --ok-label="关闭" >/dev/null 2>&1 || true
   else
     sed -n '1,$p' "$transcript_file"
@@ -1092,6 +1216,8 @@ ensure_single_instance
 ensure_recorder_backend
 has_clipboard_backend || die "缺少剪贴板工具：Wayland 需要 wl-clipboard，X11 需要 xclip 或 xsel。"
 
+prune_runtime_files
+
 timestamp="$(date +%Y%m%d-%H%M%S)"
 audio_file="$TMP_DIR/recording-$timestamp.wav"
 text_file="$TMP_DIR/transcript-$timestamp.txt"
@@ -1102,14 +1228,18 @@ hotwords="$(build_hotwords)"
 
 notify "录音开始。说完后点击停止录音。"
 
-ffmpeg -hide_banner -loglevel error -y -f "$AUDIO_FORMAT" -i "$AUDIO_SOURCE" -ac 1 -ar 16000 "$audio_file" 2>"$record_error_file" &
+ffmpeg -hide_banner -loglevel error -y -f "$AUDIO_FORMAT" -i "$AUDIO_SOURCE" -t "$MAX_SECONDS" -ac 1 -ar 16000 "$audio_file" 2>"$record_error_file" &
 ffmpeg_pid=$!
 
 sleep 0.3
 if ! kill -0 "$ffmpeg_pid" >/dev/null 2>&1; then
   wait "$ffmpeg_pid" >/dev/null 2>&1 || true
-  error_text="$(sed -n '1,20p' "$record_error_file")"
-  die "录音没能启动：${error_text:-未知错误}\n\n日志：$record_error_file"
+  # 录音源自己结束（AUDIO_SOURCE 指向文件、时长上限很短、麦克风被拔掉）时也会走这里：
+  # 只要已经录下内容就照常往下走，只有没留下内容才算真的启动失败。
+  if [ "$(stat -c%s "$audio_file" 2>/dev/null || echo 0)" -le 6400 ]; then
+    error_text="$(sed -n '1,20p' "$record_error_file")"
+    die "录音没能启动：${error_text:-未知错误}\n\n日志：$record_error_file"
+  fi
 fi
 
 show_recording_dialog
@@ -1125,11 +1255,10 @@ if [ ! -s "$audio_file" ]; then
   die "录音失败，没有生成有效的音频。${error_text:-}\n\n日志：$record_error_file"
 fi
 
-# 几乎无信号的录音（麦克风被静音、拔麦、纯底噪）送去识别只会得到幻觉文本，
-# 这里先用平均音量把"没说话"和"说得小声"分开，避免把噪音写成字。
-mean_volume="$(sed -n 's/.*mean_volume: \([-0-9.]*\) dB.*/\1/p' <(ffmpeg -hide_banner -nostdin -i "$audio_file" -af volumedetect -f null - 2>&1) | sed -n '1p')"
-if [ -n "$mean_volume" ] && awk -v v="$mean_volume" 'BEGIN { exit !(v <= -45) }'; then
-  die "没听到声音（录音音量 ${mean_volume} dB，几乎静音）。请检查麦克风是否被静音或拔掉，然后重试。"
+# 几乎无信号的录音（麦克风被静音、拔麦、纯底噪）送进后端只会得到幻觉文本
+# （实测 SenseVoice 会吐 "."、"1212345。"），所以先判有没有人说话，避免把噪音写成字。
+if looks_silent "$audio_file"; then
+  die "没听到声音（有效语音 ${SILENT_SPEECH} 秒 / 录音 ${SILENT_DURATION} 秒，峰值 ${SILENT_MAX} dB，平均 ${SILENT_MEAN} dB）。请检查麦克风是否被静音或拔掉，然后重试。"
 fi
 
 notify "正在转写..."
