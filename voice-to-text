@@ -1378,7 +1378,19 @@ for audio_file in audio_files:
     if raw:
         chunks.append(raw)
 
-text = "".join(chunks).strip()
+PUNCT = "。！？，、；：,.!?;:\u2026\u2014）)】」』"
+if len(chunks) > 1:
+    # 分段边界上 SenseVoice 有时两段都带标点（如「内容。」+「。比如」），
+    # 直接拼会得到「。。」；只在这种重复标点的情况下丢掉后一段开头那个。
+    joined = chunks[0].rstrip()
+    for chunk in chunks[1:]:
+        chunk = chunk.lstrip()
+        if joined and chunk and joined[-1] in PUNCT and chunk[0] in PUNCT:
+            chunk = chunk[1:].lstrip()
+        joined += chunk
+    text = joined.strip()
+else:
+    text = "".join(chunks).strip()
 try:
     from zhconv import convert
     text = convert(text, "zh-cn")
