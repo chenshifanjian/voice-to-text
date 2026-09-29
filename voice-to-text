@@ -373,10 +373,14 @@ looks_silent() {
   SILENT_SPEECH="$speech"
   SILENT_DURATION="$duration"
   awk -v s="$speech" -v m="$max" -v d="$duration" 'BEGIN {
-    if (s + 0 >= 0.8) exit 1
-    if (m + 0 < -35) exit 0
-    if (d + 0 > 0 && s / d < 0.10) exit 0
-    exit 1
+    # 判据只用「-38 dB 以上的有效语音时长」这一个绝对值，理由来自真机标定：
+    #   真人一口气说话   有效语音 1.5–5.5 秒   → 必须放行
+    #   一次很短的真话   0.47 / 0.49 秒        → 也要放行（旧的比例判据会把它们杀掉）
+    #   安静房间底噪     0.07 秒（峰值 -34 dB）→ 拦住，那是键盘/风扇的瞬时声
+    #   合成静音         0.00 秒（峰值 -91 dB）→ 拦住
+    # 0.3 秒正好落在「点击/噪声毛刺」和「最短真实发音」之间。
+    if (s + 0 >= 0.3) exit 1
+    exit 0
   }'
 }
 
