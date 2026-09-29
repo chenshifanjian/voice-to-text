@@ -57,10 +57,11 @@
 
 ## 功能特性
 
-- 本地语音识别：使用 `faster-whisper`
+- 本地语音识别：默认 `SenseVoiceSmall`（INT8，中文更准、速度更快），可切换回 `faster-whisper`
 - 默认自动识别语言，适合中英混合短句
 - 中文输出会尽量转换为简体
 - 默认 CPU `int8` 模式，不需要 CUDA
+- 双后端可切换：`VOICE_TO_TEXT_BACKEND=auto|sensevoice|whisper`
 - Wayland 剪贴板：`wl-copy`
 - X11 剪贴板回退：`xclip` 或 `xsel`
 - 桌面通知：`notify-send`
@@ -103,7 +104,7 @@ voice-to-text
 4. 等待转写完成。
 5. 到目标输入框按 `Ctrl+V` 粘贴。
 
-第一次转写时会下载 Whisper 模型，可能会慢一点。模型下载完成后，后续会直接复用缓存。
+第一次转写时会下载模型（SenseVoice 约 900 MB，Whisper `medium` 约 1.5 GB），可能会慢一点。下载完成后会直接复用本地缓存，日常转写不再联网。
 
 如果只是想检查环境是否正常，不开始录音，可以运行：
 
@@ -154,6 +155,32 @@ window-rule {
 
 ## 配置
 
+### 识别后端（SenseVoice / Whisper）
+
+默认 `auto`：装了 SenseVoice 就用 SenseVoice，否则回退 Whisper。
+
+```bash
+VOICE_TO_TEXT_BACKEND=sensevoice voice-to-text
+VOICE_TO_TEXT_BACKEND=whisper voice-to-text
+```
+
+同一台 16 核 CPU 机器、同一段 8 秒中文录音实测：
+
+| 后端 | 端到端耗时 | 中文准确率 |
+| --- | --- | --- |
+| `sensevoice`（INT8） | 约 2.2 秒 | 更高，中英混说更稳 |
+| `whisper` `medium`（INT8） | 约 11 秒 | 略低 |
+
+代价有三点：SenseVoice 不支持 hotwords 词库（改由纠错表兜底）、英文技术词比 Whisper 略弱、单段音频上限 30 秒（语贴会自动按静音切段，长录音不受影响）。
+
+```bash
+VOICE_TO_TEXT_SENSEVOICE_MODEL=iic/SenseVoiceSmall voice-to-text
+VOICE_TO_TEXT_SENSEVOICE_THREADS=4 voice-to-text
+VOICE_TO_TEXT_SENSEVOICE_MAX_SEGMENT=25 voice-to-text
+```
+
+### 语言
+
 默认自动识别语言，适合中英混合：
 
 ```bash
@@ -172,7 +199,7 @@ VOICE_TO_TEXT_LANGUAGE=zh voice-to-text
 VOICE_TO_TEXT_LANGUAGE=en voice-to-text
 ```
 
-默认模型是 `medium`（准确率和速度的最佳平衡）。如果你想更快，可以换成 `small`；如果追求最高准确率且不介意速度慢，可以换 `large-v3-turbo`：
+Whisper 后端的默认模型是 `medium`（准确率和速度的最佳平衡）。如果你想更快，可以换成 `small`；如果追求最高准确率且不介意速度慢，可以换 `large-v3-turbo`（有 NVIDIA GPU 时才有速度优势）：
 
 ```bash
 VOICE_TO_TEXT_MODEL=small voice-to-text
@@ -189,6 +216,8 @@ VOICE_TO_TEXT_BEAM_SIZE=3 voice-to-text
 ```bash
 VOICE_TO_TEXT_INITIAL_PROMPT="以下是一段语音转文字的结果，内容包含中文简体字、English words 和阿拉伯数字。" voice-to-text
 ```
+
+词库（hotwords）只对 `whisper` 后端生效，SenseVoice 不接受 hotwords，改用下面的纠错表兜底。
 
 安装脚本会额外安装一份计算机专有名词 starter 词库，来源参考了 Wikipedia 的计算机科学、计算机硬件和人工智能术语表，并补充了常见开发工具、AI 工具和 Linux 桌面词。运行时优先读取个人词库，再从内置词库补足，最多取前 `40` 个安全词作为 `faster-whisper` hotwords 使用，减少专有名词对普通中文和数字听写的干扰，基本不增加识别时间：
 
@@ -322,10 +351,11 @@ VOICE_TO_TEXT_THEME=light voice-to-text
 ~/.local/share/applications/voice-to-text.desktop
 ```
 
-`voice-to-text --setup` 会创建独立 Python 环境：
+`voice-to-text --setup` 会创建独立 Python 环境。SenseVoice 依赖的 `kaldi-native-fbank` 等包只有 Python 3.12 的轮子，所以单独建一个环境隔离，不污染 Whisper 环境：
 
 ```text
-~/.local/share/voice-to-text/venv
+~/.local/share/voice-to-text/venv             # whisper 后端
+~/.local/share/voice-to-text/venv-sensevoice  # sensevoice 后端（Python 3.12）
 ```
 
 最近转写历史位于：
@@ -341,6 +371,14 @@ Whisper 模型通常会缓存到 Hugging Face 缓存目录，例如：
 ```
 
 语贴启动转写时会优先解析并使用本地 Hugging Face 缓存里的 `faster-whisper` 模型快照。如果本地已有模型，会直接传本地路径并启用 `local_files_only`，避免每次重启后因为无法访问 Hugging Face 而卡在联网检查。只有第一次使用某个模型、切换到未缓存模型，或缓存被删除时，才需要联网下载。
+
+SenseVoice 模型缓存在 ModelScope 缓存目录：
+
+```text
+~/.cache/modelscope/models/iic--SenseVoiceSmall
+```
+
+语贴会把本地模型目录直接传给 `funasr-onnx`，所以日常转写不会再向 ModelScope 查询更新，离线也能用。如果首次安装时只下到了 PyTorch 版模型，`--setup` 会自动导出并量化 ONNX（首次需要临时安装 torch 和 funasr，仅一次）。
 
 临时录音、转写文本和错误日志位于：
 
@@ -455,7 +493,8 @@ It was originally built for fast voice conversations with AI tools. It does not 
 
 ## Features
 
-- Local transcription with `faster-whisper`
+- Local transcription with `SenseVoiceSmall` (INT8) by default, `faster-whisper` as fallback
+- Switchable backend via `VOICE_TO_TEXT_BACKEND=auto|sensevoice|whisper`
 - Automatic language detection by default, suitable for mixed Chinese and English
 - Chinese output is converted to Simplified Chinese when possible
 - CPU `int8` mode by default, no CUDA required
@@ -501,13 +540,23 @@ Change language:
 VOICE_TO_TEXT_LANGUAGE=en voice-to-text
 ```
 
-Change model (default is `medium`):
+Change backend (default `auto`: use SenseVoice when installed, otherwise Whisper):
+
+```bash
+VOICE_TO_TEXT_BACKEND=whisper voice-to-text
+```
+
+On the same 16-core CPU machine, `SenseVoiceSmall` transcribes an 8-second Chinese clip end to end in about 2.2 seconds versus about 11 seconds for Whisper `medium`, with better mixed Chinese/English accuracy. It has no `hotwords` support (the correction table covers those cases) and is slightly weaker on English technical terms; audio longer than 30 seconds is split on detected silence automatically.
+
+Change the Whisper model (default is `medium`):
 
 ```bash
 VOICE_TO_TEXT_MODEL=small voice-to-text
 ```
 
 The default prompt is a short, natural example of what the transcript should look like, covering Simplified Chinese, English words, product names, and Arabic numerals. Whisper's `initial_prompt` is not an instruction list: imperative phrases like "please..." or "do not..." can get echoed back as part of the transcript, so the default prompt avoids them.
+
+Hotwords only apply to the `whisper` backend; `SenseVoice` ignores them, so fix recurring mistakes with the correction table below.
 
 The installer also ships a starter computer terminology list and literal correction table. Personal terms are loaded first, then safe built-in terms fill the remaining slots up to `40`. They are passed to `faster-whisper` as `hotwords`, instead of being appended directly to the prompt, to reduce interference with ordinary Chinese and number dictation:
 

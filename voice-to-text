@@ -3,7 +3,11 @@ set -euo pipefail
 
 APP_NAME="语贴"
 LANGUAGE="${VOICE_TO_TEXT_LANGUAGE:-auto}"
+BACKEND="${VOICE_TO_TEXT_BACKEND:-auto}"
 MODEL="${VOICE_TO_TEXT_MODEL:-medium}"
+SV_MODEL="${VOICE_TO_TEXT_SENSEVOICE_MODEL:-iic/SenseVoiceSmall}"
+SV_THREADS="${VOICE_TO_TEXT_SENSEVOICE_THREADS:-4}"
+SV_MAX_SEGMENT="${VOICE_TO_TEXT_SENSEVOICE_MAX_SEGMENT:-25}"
 BEAM_SIZE="${VOICE_TO_TEXT_BEAM_SIZE:-5}"
 INITIAL_PROMPT="${VOICE_TO_TEXT_INITIAL_PROMPT:-以下是一段语音转文字的结果，内容包含中文简体字、English words、产品名和阿拉伯数字。}"
 if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
@@ -14,6 +18,7 @@ fi
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/voice-to-text"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/voice-to-text"
 VENV_DIR="$DATA_DIR/venv"
+SV_VENV_DIR="$DATA_DIR/venv-sensevoice"
 AUDIO_FORMAT="${VOICE_TO_TEXT_AUDIO_FORMAT:-pulse}"
 AUDIO_SOURCE="${VOICE_TO_TEXT_AUDIO_SOURCE:-default}"
 TERMS_LIMIT="${VOICE_TO_TEXT_TERMS_LIMIT:-40}"
@@ -93,11 +98,18 @@ has_graphical_session() {
 }
 
 die() {
-  notify "$1"
+  local message="$1"
+
+  printf '%s: %s\n' "$APP_NAME" "$message" >&2
+  notify "$message"
+
+  # 终端里运行时错误信息已经打印出来了，就不再弹窗打断。
+  if [ -t 2 ]; then
+    exit 1
+  fi
+
   if command -v zenity >/dev/null 2>&1 && has_graphical_session; then
-    zenity --error --title="$APP_NAME" --text="$1" >/dev/null 2>&1 || true
-  else
-    printf '%s\n' "$1" >&2
+    zenity --error --title="$APP_NAME" --text="$message" >/dev/null 2>&1 || true
   fi
   exit 1
 }
@@ -114,6 +126,19 @@ validate_config() {
 
   case "$HISTORY_LIMIT" in
     ''|*[!0-9]*) die "VOICE_TO_TEXT_HISTORY_LIMIT must be a non-negative integer." ;;
+  esac
+
+  case "$SV_THREADS" in
+    ''|*[!0-9]*|0) die "VOICE_TO_TEXT_SENSEVOICE_THREADS must be a positive integer." ;;
+  esac
+
+  case "$SV_MAX_SEGMENT" in
+    ''|*[!0-9]*|0) die "VOICE_TO_TEXT_SENSEVOICE_MAX_SEGMENT must be a positive integer." ;;
+  esac
+
+  case "$BACKEND" in
+    auto|sensevoice|whisper) ;;
+    *) die "VOICE_TO_TEXT_BACKEND must be auto, sensevoice, or whisper." ;;
   esac
 }
 
@@ -188,14 +213,182 @@ has_clipboard_backend() {
   return 1
 }
 
+sensevoice_available() {
+  [ -x "$SV_VENV_DIR/bin/python" ] || return 1
+  "$SV_VENV_DIR/bin/python" -c 'import funasr_onnx, onnxruntime' >/dev/null 2>&1
+}
+
+whisper_available() {
+  if [ -x "$VENV_DIR/bin/python" ] && "$VENV_DIR/bin/python" -c 'import faster_whisper' >/dev/null 2>&1; then
+    return 0
+  fi
+  if python3 -c 'import faster_whisper' >/dev/null 2>&1; then
+    return 0
+  fi
+  command -v whisper >/dev/null 2>&1
+}
+
+resolve_backend() {
+  case "$BACKEND" in
+    sensevoice)
+      printf 'sensevoice'
+      ;;
+    whisper)
+      printf 'whisper'
+      ;;
+    *)
+      if sensevoice_available; then
+        printf 'sensevoice'
+      else
+        printf 'whisper'
+      fi
+      ;;
+  esac
+}
+
+# 优先使用本地已下载/已导出的模型目录，避免每次调用都联网向 ModelScope 查询。
+sensevoice_model_dir() {
+  local cache_root="${MODELSCOPE_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/modelscope}"
+  local snapshot_name candidate
+
+  if [ -d "$SV_MODEL" ]; then
+    printf '%s' "$SV_MODEL"
+    return 0
+  fi
+
+  snapshot_name="$(printf '%s' "$SV_MODEL" | sed 's|/|--|g')"
+  for candidate in "$DATA_DIR/models/$snapshot_name" "$cache_root/models/$snapshot_name/snapshots/master"; do
+    if [ -f "$candidate/model_quant.onnx" ] || [ -f "$candidate/model.onnx" ]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+
+  printf '%s' "$SV_MODEL"
+}
+
+sensevoice_language() {
+  case "$LANGUAGE" in
+    auto|"") printf 'auto' ;;
+    zh|zh-cn|zh-hans|zh_cn|zh-hant) printf 'zh' ;;
+    en|yue|ja|ko) printf '%s' "$LANGUAGE" ;;
+    *) printf 'auto' ;;
+  esac
+}
+
+audio_duration() {
+  local src_file="$1"
+  local value
+  value="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$src_file" 2>/dev/null | head -n 1 || true)"
+  case "$value" in
+    ''|*[!0-9.]*) printf '0' ;;
+    *) printf '%s' "${value%%.*}" ;;
+  esac
+}
+
+# SenseVoice 是单段模型，超过 SV_MAX_SEGMENT 的录音按静音点切分：
+# 输出 "起 止" 行；"0 -1" 表示整段直接用原文件。
+plan_audio_segments() {
+  local src_file="$1"
+  local duration silences
+  duration="$(audio_duration "$src_file")"
+  if [ "$duration" -le 0 ] || [ "$duration" -le "$SV_MAX_SEGMENT" ]; then
+    printf '0 -1\n'
+    return 0
+  fi
+
+  silences="$(ffmpeg -hide_banner -nostats -i "$src_file" -af silencedetect=noise=-35dB:d=0.3 -f null - 2>&1 |
+    sed -n 's/.*silence_end: \([0-9.]*\).*/\1/p' || true)"
+
+  printf '%s\n' "$silences" | awk -v max="$SV_MAX_SEGMENT" -v total="$duration" '
+    /^[0-9.]+$/ { points[count++] = $1 + 0 }
+    END {
+      start = 0
+      cursor = 0
+      guard = 0
+      while (start + max < total && guard++ < 500) {
+        limit = start + max
+        best = -1
+        for (j = cursor; j < count; j++) {
+          if (points[j] > limit) break
+          if (points[j] > start + 1) best = points[j]
+        }
+        if (best < 0) best = limit
+        printf "%.3f %.3f\n", start, best
+        start = best
+        while (cursor < count && points[cursor] <= best) cursor++
+      }
+      printf "%.3f %.3f\n", start, total
+    }'
+}
+
 setup_backend() {
   command -v uv >/dev/null 2>&1 || die "Missing uv. Install uv first, then run: voice-to-text --setup"
   mkdir -p "$DATA_DIR"
+  setup_whisper_backend
+  setup_sensevoice_backend
+  notify "Speech recognition backend is installed."
+}
+
+setup_whisper_backend() {
   if [ ! -x "$VENV_DIR/bin/python" ]; then
     uv venv "$VENV_DIR"
   fi
   uv pip install --python "$VENV_DIR/bin/python" faster-whisper zhconv
-  notify "Speech recognition backend is installed."
+}
+
+setup_sensevoice_backend() {
+  if [ ! -x "$SV_VENV_DIR/bin/python" ]; then
+    # funasr-onnx 依赖 numpy<=1.26.4 与 kaldi-native-fbank，两者都没有 3.14 的轮子，
+    # 因此 SenseVoice 单独用一个 3.12 虚拟环境，与 whisper 的 3.14 环境互不干扰。
+    uv venv --python 3.12 "$SV_VENV_DIR"
+  fi
+  uv pip install --python "$SV_VENV_DIR/bin/python" funasr-onnx onnxruntime modelscope zhconv
+  ensure_sensevoice_model
+}
+
+# 模型首次使用时要导出 ONNX：导出依赖 PyTorch，只在临时环境里做，成功后删掉，
+# 这样日常环境不会为了 2GB 的 torch 长期占空间。
+ensure_sensevoice_model() {
+  local log_file="$TMP_DIR/sensevoice-setup.log"
+  local export_venv="$DATA_DIR/venv-sensevoice-export"
+  local model_dir
+  model_dir="$(sensevoice_model_dir)"
+
+  if sensevoice_model_probe "$SV_VENV_DIR" "$model_dir" >>"$log_file" 2>&1; then
+    return 0
+  fi
+
+  if ! grep -q "please install funasr" "$log_file" 2>/dev/null; then
+    die "SenseVoice model is not usable. Log: $log_file"
+  fi
+
+  notify "SenseVoice 首次初始化：正在导出 ONNX 模型，需要额外下载 PyTorch（仅此一次）。"
+
+  if [ ! -x "$export_venv/bin/python" ]; then
+    uv venv --python 3.12 "$export_venv"
+  fi
+  uv pip install --python "$export_venv/bin/python" torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+  uv pip install --python "$export_venv/bin/python" funasr funasr-onnx onnxscript modelscope zhconv
+
+  if ! sensevoice_model_probe "$export_venv" "$model_dir" >>"$log_file" 2>&1; then
+    die "SenseVoice ONNX export failed. Log: $log_file"
+  fi
+
+  rm -rf "$export_venv"
+  notify "SenseVoice 模型已就绪。"
+}
+
+# 用指定环境加载模型：能加载说明 ONNX 已经导出好，报缺 funasr 说明还需要导出。
+sensevoice_model_probe() {
+  local venv_dir="$1"
+  local model_dir="$2"
+
+  "$venv_dir/bin/python" -c '
+import sys
+from funasr_onnx import SenseVoiceSmall
+SenseVoiceSmall(model_dir=sys.argv[1], quantize=True)
+' "$model_dir"
 }
 
 check_environment() {
@@ -203,14 +396,32 @@ check_environment() {
   command -v ffmpeg >/dev/null 2>&1 || die "Missing ffmpeg."
   ensure_recorder_backend
   has_clipboard_backend || die "Missing clipboard backend. Install wl-clipboard on Wayland, or xclip/xsel on X11."
+  if sensevoice_available; then
+    printf 'SenseVoice backend: %s\n' "$SV_VENV_DIR/bin/python"
+  fi
   if [ -x "$VENV_DIR/bin/python" ] && "$VENV_DIR/bin/python" -c 'import faster_whisper, zhconv' >/dev/null 2>&1; then
-    printf 'ASR backend: %s\n' "$VENV_DIR/bin/python"
+    printf 'whisper backend: %s\n' "$VENV_DIR/bin/python"
   elif python3 -c 'import faster_whisper' >/dev/null 2>&1; then
-    printf 'ASR backend: system python faster-whisper\n'
+    printf 'whisper backend: system python faster-whisper\n'
   elif command -v whisper >/dev/null 2>&1; then
-    printf 'ASR backend: whisper CLI\n'
-  else
+    printf 'whisper backend: whisper CLI\n'
+  fi
+  if ! sensevoice_available && ! whisper_available; then
     die "No speech recognition backend found. Run: voice-to-text --setup"
+  fi
+  if [ "$BACKEND" = "sensevoice" ] && ! sensevoice_available; then
+    die "VOICE_TO_TEXT_BACKEND=sensevoice but the SenseVoice backend is not installed. Run: voice-to-text --setup"
+  fi
+  if [ "$BACKEND" = "whisper" ] && ! whisper_available; then
+    die "VOICE_TO_TEXT_BACKEND=whisper but no whisper backend is installed. Run: voice-to-text --setup"
+  fi
+  printf 'Selected backend: %s\n' "$(resolve_backend)"
+  if [ "$(resolve_backend)" = "sensevoice" ]; then
+    printf 'SenseVoice model: %s\n' "$SV_MODEL"
+    printf 'SenseVoice model dir: %s\n' "$(sensevoice_model_dir)"
+    printf 'SenseVoice threads: %s\n' "$SV_THREADS"
+    printf 'SenseVoice segment limit: %ss\n' "$SV_MAX_SEGMENT"
+    printf 'Hotword mode: disabled (SenseVoice has no hotword support; replacements still apply)\n'
   fi
   printf 'Recorder: ffmpeg -f %s -i %s\n' "$AUDIO_FORMAT" "$AUDIO_SOURCE"
   printf 'Clipboard: available\n'
@@ -285,14 +496,34 @@ doctor() {
     printf 'fail clipboard backend\n'
     failed=1
   fi
+  if sensevoice_available; then
+    printf 'ok   SenseVoice venv: %s\n' "$SV_VENV_DIR/bin/python"
+  else
+    printf 'info SenseVoice not installed\n'
+  fi
   if [ -x "$VENV_DIR/bin/python" ] && "$VENV_DIR/bin/python" -c 'import faster_whisper, zhconv' >/dev/null 2>&1; then
-    printf 'ok   ASR venv: %s\n' "$VENV_DIR/bin/python"
+    printf 'ok   whisper venv: %s\n' "$VENV_DIR/bin/python"
   elif python3 -c 'import faster_whisper' >/dev/null 2>&1; then
     printf 'ok   system python faster-whisper\n'
   elif command -v whisper >/dev/null 2>&1; then
     printf 'ok   whisper CLI\n'
   else
-    printf 'fail ASR backend\n'
+    printf 'info whisper backend not installed\n'
+  fi
+  if [ "$BACKEND" = "sensevoice" ] && ! sensevoice_available; then
+    printf 'fail backend=sensevoice is not installed\n'
+    failed=1
+  fi
+  if [ "$BACKEND" = "whisper" ] && ! whisper_available; then
+    printf 'fail backend=whisper is not installed\n'
+    failed=1
+  fi
+  if [ "$(resolve_backend)" = "sensevoice" ]; then
+    printf 'info selected backend: sensevoice (%s)\n' "$(sensevoice_model_dir)"
+  elif whisper_available; then
+    printf 'info selected backend: whisper (%s)\n' "$MODEL"
+  else
+    printf 'fail no usable ASR backend\n'
     failed=1
   fi
   [ -f "$BUILTIN_TERMS_FILE" ] && printf 'ok   built-in terms\n' || printf 'warn built-in terms missing\n'
@@ -350,7 +581,7 @@ usage() {
 Usage: voice-to-text [command]
 
 Commands:
-  --setup        Install or update the local ASR backend
+  --setup        Install or update the local ASR backends (SenseVoice + whisper)
   --check        Check required runtime dependencies
   --doctor       Print a fuller diagnostic report
   --init-config  Create personal terms and correction files
@@ -359,6 +590,14 @@ Commands:
   --help         Show this help
 
 Run without a command to record, transcribe, and copy text.
+
+Environment:
+  VOICE_TO_TEXT_BACKEND=auto|sensevoice|whisper  ASR backend (default: auto)
+  VOICE_TO_TEXT_SENSEVOICE_MODEL=<model>         SenseVoice model (default: iic/SenseVoiceSmall)
+  VOICE_TO_TEXT_SENSEVOICE_THREADS=<n>           ONNX inference threads (default: 4)
+  VOICE_TO_TEXT_SENSEVOICE_MAX_SEGMENT=<secs>    Split longer recordings at pauses (default: 25)
+  VOICE_TO_TEXT_MODEL=<model>                    whisper model (default: medium)
+  VOICE_TO_TEXT_LANGUAGE=<lang>                  auto, zh, en, yue, ja, ko (default: auto)
 EOF
 }
 
@@ -1055,10 +1294,111 @@ print(text)
 PY
 }
 
+transcribe_with_sensevoice() {
+  local audio_file="$1"
+  local segment_dir="$TMP_DIR/sensevoice-segments-$$"
+  local segs=()
+  local index=0 start end segment_file language
+
+  language="$(sensevoice_language)"
+
+  while read -r start end; do
+    if [ "$end" = "-1" ]; then
+      segs+=("$audio_file")
+      continue
+    fi
+    mkdir -p "$segment_dir"
+    segment_file="$segment_dir/segment-$index.wav"
+    ffmpeg -hide_banner -loglevel error -y -ss "$start" -to "$end" -i "$audio_file" -ac 1 -ar 16000 "$segment_file" \
+      || die "Failed to split the recording into $SV_MAX_SEGMENT second segments."
+    segs+=("$segment_file")
+    index=$((index + 1))
+  done < <(plan_audio_segments "$audio_file")
+
+  if [ "${#segs[@]}" -eq 0 ]; then
+    segs=("$audio_file")
+  fi
+
+  "$SV_VENV_DIR/bin/python" - "$(sensevoice_model_dir)" "$SV_THREADS" "$language" "$BUILTIN_REPLACEMENTS_FILE" "$REPLACEMENTS_FILE" "${segs[@]}" <<'PY'
+import re
+import sys
+
+model_dir, threads, language, builtin_replacements, user_replacements = sys.argv[1:6]
+replacement_files = [builtin_replacements, user_replacements]
+audio_files = sys.argv[6:]
+
+def apply_replacements(text):
+    for replacement_file in replacement_files:
+        try:
+            with open(replacement_file, "r", encoding="utf-8") as handle:
+                for raw_line in handle:
+                    line = raw_line.strip()
+                    if not line or line.startswith("#") or "\t" not in line:
+                        continue
+                    source, target = line.split("\t", 1)
+                    if source:
+                        text = text.replace(source, target)
+        except FileNotFoundError:
+            continue
+    if len(re.findall(r'(?<![A-Za-z])Z(?=\d)', text)) >= 2:
+        text = re.sub(r'(?<![A-Za-z])Z(?=\d)', '', text)
+    tokens = re.findall(r'[A-Za-z]+(?:[-_][A-Za-z0-9]+)*\d*|\d+|[\u4e00-\u9fff]+|[^\w\s]', text)
+    if tokens:
+        compact = [token.upper() for token in tokens if re.search(r'[A-Za-z0-9\u4e00-\u9fff]', token)]
+        for size in range(1, 4):
+            if len(compact) >= size * 6:
+                chunks = [tuple(compact[i:i + size]) for i in range(0, min(len(compact), size * 8), size)]
+                if len(chunks) >= 6 and len(set(chunks[:6])) <= 2:
+                    return ''
+    text = re.sub(r'\b([A-Z]{2,5})(?:[- ]?\d)?\b(?:[,，、\s]+\b\1(?:[- ]?\d)?\b){4,}', '', text).strip(' ,，、')
+    return text
+
+def strip_tags(text):
+    return re.sub(r"<\|[^|]*\|>", "", text).strip()
+
+from funasr_onnx import SenseVoiceSmall
+
+model = SenseVoiceSmall(
+    model_dir=model_dir,
+    quantize=True,
+    batch_size=1,
+    intra_op_num_threads=int(threads),
+)
+
+chunks = []
+for audio_file in audio_files:
+    result = model(audio_file, language=language, textnorm="withitn")
+    if isinstance(result, list):
+        raw = result[0] if result else ""
+    elif isinstance(result, dict):
+        raw = result.get("text", "")
+    else:
+        raw = result
+    raw = strip_tags(str(raw))
+    if raw:
+        chunks.append(raw)
+
+text = "".join(chunks).strip()
+try:
+    from zhconv import convert
+    text = convert(text, "zh-cn")
+except Exception:
+    pass
+text = apply_replacements(text)
+print(text)
+PY
+  rm -rf "$segment_dir" >/dev/null 2>&1 || true
+}
+
 transcribe() {
   local audio_file="$1"
   local prompt="$2"
   local hotwords="$3"
+
+  if [ "$(resolve_backend)" = "sensevoice" ]; then
+    transcribe_with_sensevoice "$audio_file"
+    return
+  fi
 
   if [ -x "$VENV_DIR/bin/python" ] && "$VENV_DIR/bin/python" -c 'import faster_whisper' >/dev/null 2>&1; then
     "$VENV_DIR/bin/python" - "$audio_file" "$MODEL" "$LANGUAGE" "$BEAM_SIZE" "$prompt" "$hotwords" "$BUILTIN_REPLACEMENTS_FILE" "$REPLACEMENTS_FILE" <<'PY'
